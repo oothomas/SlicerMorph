@@ -80,11 +80,10 @@ class HiResScreenCaptureWidget(ScriptedLoadableModuleWidget):
         self.updateTimer = None
         self.resolutionDisplayLabel = None
         self.currentScaleFactor = 1.0  # Default scale factor
-        self.selectOutputDirButton = None
+        self.selectOutputFileButton = None
         self.applyButton = None
         self.resolutionSpinBox = None  # Use a QDoubleSpinBox for resolution factor
-        self.outputDirLineEdit = None
-        self.filenameLineEdit = None
+        self.outputFileLineEdit = None
         self.logic = None
 
     def setup(self) -> None:
@@ -102,20 +101,15 @@ class HiResScreenCaptureWidget(ScriptedLoadableModuleWidget):
 
         parametersFormLayout = qt.QFormLayout(parametersCollapsibleButton)
 
-        # Output filename QLineEdit
-        self.filenameLineEdit = qt.QLineEdit()
-        self.filenameLineEdit.setPlaceholderText("Enter filename (e.g., screenshot.png)")
-        parametersFormLayout.addRow("Filename:", self.filenameLineEdit)
-
-        # Output directory selector
-        self.outputDirLineEdit = qt.QLineEdit()
-        self.outputDirLineEdit.setReadOnly(True)
-        self.selectOutputDirButton = qt.QPushButton("Select Output Folder")
-        self.selectOutputDirButton.clicked.connect(self.selectOutputDirectory)
-        directoryHBox = qt.QHBoxLayout()
-        directoryHBox.addWidget(self.outputDirLineEdit)
-        directoryHBox.addWidget(self.selectOutputDirButton)
-        parametersFormLayout.addRow("Output Folder:", directoryHBox)
+        # Output file QLineEdit
+        self.outputFileLineEdit = qt.QLineEdit()
+        self.outputFileLineEdit.setPlaceholderText("e.g., /path/to/screenshot.png")
+        self.selectOutputFileButton = qt.QPushButton("Select Output File")
+        self.selectOutputFileButton.clicked.connect(self.selectOutputFile)
+        fileHBox = qt.QHBoxLayout()
+        fileHBox.addWidget(self.outputFileLineEdit)
+        fileHBox.addWidget(self.selectOutputFileButton)
+        parametersFormLayout.addRow("Output File:", fileHBox)
 
         # Resolution Scaling Factor (using QDoubleSpinBox)
         self.resolutionSpinBox = qt.QDoubleSpinBox()
@@ -146,8 +140,7 @@ class HiResScreenCaptureWidget(ScriptedLoadableModuleWidget):
         self.logic.setCurrentScalFactor(self.currentScaleFactor)  # set default scale factor
 
         # Connect signals
-        self.filenameLineEdit.textChanged.connect(self.updateApplyButtonState)
-        self.outputDirLineEdit.textChanged.connect(self.updateApplyButtonState)
+        self.outputFileLineEdit.textChanged.connect(self.updateApplyButtonState)
 
         # Set initial state for the apply button
         self.updateApplyButtonState()
@@ -172,13 +165,13 @@ class HiResScreenCaptureWidget(ScriptedLoadableModuleWidget):
         # Properly call super with the current class name and `self`
         super().cleanup()
 
-    def selectOutputDirectory(self) -> None:
+    def selectOutputFile(self) -> None:
         """
-        Open a directory selection dialog and set the output directory.
+        Open a file selection dialog and set the output file path.
         """
-        selectedDir = qt.QFileDialog.getExistingDirectory()
-        if selectedDir:
-            self.outputDirLineEdit.setText(selectedDir)
+        selectedFile = qt.QFileDialog.getSaveFileName(None, "Select Output File", "", "PNG Files (*.png);;All Files (*)")
+        if selectedFile:
+            self.outputFileLineEdit.setText(selectedFile)
 
     def onResolutionFactorChanged(self, value):
         """
@@ -192,15 +185,14 @@ class HiResScreenCaptureWidget(ScriptedLoadableModuleWidget):
         """
         Updates the state of the apply button based on the input fields and resolution factor.
         """
-        isFilenameSet = bool(self.filenameLineEdit.text.strip()) and self.filenameLineEdit.text.strip().endswith('.png')
-        isOutputFolderSet = bool(self.outputDirLineEdit.text.strip())
-        self.applyButton.setEnabled(isFilenameSet and isOutputFolderSet)
+        isFilePathSet = bool(self.outputFileLineEdit.text.strip()) and self.outputFileLineEdit.text.strip().endswith('.png')
+        self.applyButton.setEnabled(isFilePathSet)
 
     def applyButtonClicked(self):
         """
         Handles the apply button click to execute screenshot logic with the current scale factor.
         """
-        outputPath = os.path.join(self.outputDirLineEdit.text, self.filenameLineEdit.text)
+        outputPath = self.outputFileLineEdit.text
         self.logic.setOutputPath(outputPath)
         self.logic.setResolutionFactor(self.currentScaleFactor)
         self.logic.runScreenCapture()
