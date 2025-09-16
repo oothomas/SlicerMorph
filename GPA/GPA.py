@@ -455,6 +455,8 @@ class GPAWidget(ScriptedLoadableModuleWidget):
     self.addLayoutButton(501, 'Table Only View', 'Custom layout for GPA module', 'LayoutTableOnlyView.png', slicer.customLayoutTableOnly)
     self.addLayoutButton(502, 'Plot Only View', 'Custom layout for GPA module', 'LayoutPlotOnlyView.png', slicer.customLayoutPlotOnly)
 
+    self._initGeomorphLRTab()
+
     ################################### Setup tab connections
     self.ui.LMbutton.connect('clicked(bool)', self.onSelectLandmarkFiles)
     self.ui.clearButton.connect('clicked(bool)', self.onClearButton)
@@ -487,6 +489,8 @@ class GPAWidget(ScriptedLoadableModuleWidget):
     self.ui.stopRecordButton.connect('clicked(bool)', self.onStopRecording)
     self.ui.resetButton.connect('clicked(bool)', self.reset)
     self.ui.updateMagnificationButton.connect("clicked()", self.onUpdateMagnificationClicked)
+    #if hasattr(self.ui, 'testingPrintButton'):
+      #self.ui.testingPrintButton.connect('clicked(bool)', self.onTestingPrint)
     self.PCList=[]
 
     # Keep a persistent controller instance
@@ -775,6 +779,180 @@ class GPAWidget(ScriptedLoadableModuleWidget):
     self.inputFilePaths = []
     self.ui.clearButton.enabled = False
 
+  # def onTestingPrint(self):
+  #   # Prints to the Slicer Python console
+  #   print("Testing")
+
+  def _qt_text(self, obj):
+    """Return string from Qt thing that may expose .text as a slot or a value."""
+    try:
+      t = obj.text() if callable(getattr(obj, 'text', None)) else obj.text
+    except Exception:
+      t = obj
+    return str(t)
+
+  # ---------- Geomorph LR: formula builder (UI-only) ----------
+
+  def _initGeomorphLRTab(self):
+    """Wire up the new LR tab if present; safe to call multiple times."""
+    if not hasattr(self.ui, 'geomorphLRTab'):
+      return
+
+    ui = self.ui
+
+    # Buttons
+    ui.addTermsButton.clicked.connect(self._regression_addTerms)
+    ui.removeTermsButton.clicked.connect(self._regression_removeTerms)
+    ui.moveUpButton.clicked.connect(lambda: self._regression_nudgeSelected(-1))
+    ui.moveDownButton.clicked.connect(lambda: self._regression_nudgeSelected(+1))
+    ui.resetFormulaButton.clicked.connect(self._regression_resetToSizeOnly)
+    ui.copyFormulaButton.clicked.connect(self._regression_copyFormula)
+
+    # Double-click convenience
+    ui.regAvailableTermsList.itemDoubleClicked.connect(
+      lambda _: self._regression_addTerms())
+    ui.regSelectedTermsList.itemDoubleClicked.connect(
+      lambda _: self._regression_removeTerms())
+
+    # Update formula whenever selected list is reordered via drag & drop
+    try:
+      ui.regSelectedTermsList.model().rowsMoved.connect(
+        lambda *args: self._regression_updateFormula())
+    except Exception:
+      pass
+
+    # Keep the tab in sync with the scene/covariates when user navigates
+    ui.tabWidget.currentChanged.connect(self._onMainTabChanged)
+
+    # First-time populate
+    self._regression_rebuildAvailableTerms()
+    self._regression_resetToSizeOnly()
+
+  def _onMainTabChanged(self, index):
+    try:
+      w = self.ui.tabWidget.widget(index)
+      if w and getattr(w, 'objectName', lambda: None)() == 'geomorphLRTab':
+        self._regression_rebuildAvailableTerms()
+        n = self.ui.regSelectedTermsList.count() if callable(
+          getattr(self.ui.regSelectedTermsList, 'count', None)) else int(self.ui.regSelectedTermsList.count)
+        if int(n) == 0:
+          self._regression_resetToSizeOnly()
+    except Exception:
+      pass
+
+  def _regression_getCovariateNames(self):
+    """Return covariate names from loaded table (excludes first ID col)."""
+    names = []
+    ftn = getattr(self, 'factorTableNode', None)
+    if ftn:
+      try:
+        ncols = ftn.GetNumberOfColumns()
+        table = ftn.GetTable()
+        for c in range(1, ncols):
+          nm = str(table.GetColumnName(c)).strip()
+          if nm and nm not in names:
+            names.append(nm)
+      except Exception:
+        pass
+    return names
+
+  def _regression_computeAllTerms(self):
+    """
+    Build exhaustive term list: main effects + all pairwise interactions.
+    Always includes 'Size' as a main effect.
+    """
+    covs = self._regression_getCovariateNames()
+    main = ['Size'] + covs
+
+    # Pairwise interactions (A:B). Includes Size:Cov and Cov1:Cov2; no duplicates.
+    interactions = []
+    all_vars = main[:]  # preserve order (Size first)
+    for i in range(len(all_vars)):
+      for j in range(i + 1, len(all_vars)):
+        interactions.append(f"{all_vars[i]}:{all_vars[j]}")
+
+    return main + interactions
+
+  def _listwidget_strings(self, lw):
+    n = lw.count() if callable(getattr(lw, 'count', None)) else int(lw.count)
+    out = []
+    for i in range(int(n)):
+      it = lw.item(i)
+      out.append(self._qt_text(it))
+    return out
+
+  def _listwidget_set(self, lw, items):
+    lw.clear()
+    for s in items:
+      lw.addItem(s)
+
+  def _regression_rebuildAvailableTerms(self):
+    """Populate the left list from current covariates."""
+    terms = self._regression_computeAllTerms()
+    # Keep selected terms separate and remove from available to avoid duplicates
+    selected = set(self._listwidget_strings(self.ui.regSelectedTermsList))
+    available = [t for t in terms if t not in selected]
+    self._listwidget_set(self.ui.regAvailableTermsList, available)
+
+  def _regression_addTerms(self):
+    src = self.ui.regAvailableTermsList
+    dst = self.ui.regSelectedTermsList
+    items = src.selectedItems()
+    if not items:
+      n = src.count() if callable(getattr(src, 'count', None)) else int(src.count)
+      for i in range(int(n)):
+        dst.addItem(self._qt_text(src.item(i)))
+      src.clear()
+    else:
+      for it in items:
+        dst.addItem(self._qt_text(it))
+        src.takeItem(src.row(it))
+    self._regression_updateFormula()
+
+  def _regression_removeTerms(self):
+    src = self.ui.regSelectedTermsList
+    dst = self.ui.regAvailableTermsList
+    items = src.selectedItems()
+    for it in items:
+      dst.addItem(self._qt_text(it))
+      src.takeItem(src.row(it))
+    self._regression_updateFormula()
+
+  def _regression_nudgeSelected(self, delta):
+    lw = self.ui.regSelectedTermsList
+    n = lw.count() if callable(getattr(lw, 'count', None)) else int(lw.count)
+    rows = sorted({lw.row(i) for i in lw.selectedItems()})
+    if not rows:
+      return
+    row = rows[0]
+    new_row = max(0, min(int(n) - 1, row + delta))
+    if new_row == row:
+      return
+    item = lw.takeItem(row)
+    lw.insertItem(new_row, item)
+    lw.setCurrentRow(new_row)
+    self._regression_updateFormula()
+
+  def _regression_resetToSizeOnly(self):
+    self._listwidget_set(self.ui.regSelectedTermsList, ['Size'])
+    # Ensure 'Size' is not left in available
+    self._regression_rebuildAvailableTerms()
+    self._regression_updateFormula()
+
+  def _regression_updateFormula(self):
+    """Compose formula as 'Coords ~ term1 + term2 + ...' honoring order."""
+    terms = self._listwidget_strings(self.ui.regSelectedTermsList)
+    if not terms:
+      # fall back to Size only
+      terms = ['Size']
+    formula = 'Coords ~ ' + ' + '.join(terms)
+    self.ui.regFormulaLine.setText(formula)
+    # stash for later stages
+    self.regressionFormula = formula
+
+  def _regression_copyFormula(self):
+    qt.QApplication.clipboard().setText(self._qt_text(self.ui.regFormulaLine))
+
   def onSelectLandmarkFiles(self):
     self.ui.inputFileTable.clear()
     self.inputFilePaths = []
@@ -928,6 +1106,10 @@ class GPAWidget(ScriptedLoadableModuleWidget):
     for i in range(1,self.factorTableNode.GetNumberOfColumns()):
       self.ui.GPALogTextbox.insertPlainText(f"{self.factorTableNode.GetTable().GetColumnName(i)} ")
     self.ui.GPALogTextbox.insertPlainText("\n")
+
+    if hasattr(self, '_regression_rebuildAvailableTerms'):
+      self._regression_rebuildAvailableTerms()
+
     return runAnalysis
 
   def onSelectResultsDirectory(self):
@@ -978,6 +1160,10 @@ class GPAWidget(ScriptedLoadableModuleWidget):
         self.ui.selectFactor.addItem(name)
 
     self.ui.GPALogTextbox.insertPlainText("Covariate table loaded for results session\n")
+
+    if hasattr(self, '_regression_rebuildAvailableTerms'):
+      self._regression_rebuildAvailableTerms()
+
     return True
 
   def onLoadFromFile(self):
@@ -1122,6 +1308,9 @@ class GPAWidget(ScriptedLoadableModuleWidget):
     self.ui.landmarkVisualizationType.enabled = True
     self.ui.modelVisualizationType.enabled = True
 
+    if hasattr(self, '_regression_rebuildAvailableTerms'):
+      self._regression_rebuildAvailableTerms()
+
   def onLoad(self):
     self.initializeOnLoad() #clean up module from previous runs
     logic = GPALogic()
@@ -1264,6 +1453,8 @@ class GPAWidget(ScriptedLoadableModuleWidget):
     self.ui.landmarkVisualizationType.enabled = True
     self.ui.modelVisualizationType.enabled = True
 
+    if hasattr(self, '_regression_rebuildAvailableTerms'):
+      self._regression_rebuildAvailableTerms()
 
   def initializeOnLoad(self):
     # clear rest of module when starting GPA analysis
