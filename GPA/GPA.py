@@ -2855,26 +2855,25 @@ class GPAWidget(ScriptedLoadableModuleWidget):
 
   def _r_onCheckGeomorph(self):
     """
-    Status: RRPP is required; geomorph is optional.
+    Status for a *geomorph-first* workflow:
     - Rscript self-test is informative only (won't block fitting).
-    - If connected to Rserve, we list versions from installed.packages() (no loading).
+    - If connected to Rserve, list geomorph version from installed.packages() (no loading).
+    - Gate "Fit" on *geomorph present in Rserve*.
     """
 
     def _fmt(xs):
       return ("\n  - " + "\n  - ".join(xs)) if xs else " (none)"
 
-    # Safe CLI load test (robust parser)
+    # --- CLI check (informative) ---
     cli_ok, cli_info = self._r_cli_pkg_selftest()
     cli_rhome = cli_info.get("r_home", "?")
     cli_libs = cli_info.get("libpaths", [])
     cli_okG = cli_info.get("load_ok", {}).get("geomorph", False)
-    cli_okR = cli_info.get("load_ok", {}).get("RRPP", False)
-    cli_vG = cli_info.get("geomorph", "")
-    cli_vR = cli_info.get("RRPP", "")
+    cli_vG  = cli_info.get("geomorph", "")
 
-    # Rserve: what's installed (no load)
+    # --- Rserve check: installed versions (no load) ---
     conn = getattr(self, "_r_conn", None)
-    rsrv_vG = rsrv_vR = ""
+    rsrv_vG = ""
     rsrv_rhome = "?"
     rsrv_libs = []
     if conn:
@@ -2882,53 +2881,45 @@ class GPAWidget(ScriptedLoadableModuleWidget):
         s = str(conn.eval(
           "ip <- rownames(installed.packages());"
           "g <- if ('geomorph' %in% ip) as.character(packageVersion('geomorph')) else '';"
-          "r <- if ('RRPP'     %in% ip) as.character(packageVersion('RRPP'))     else '';"
-          "paste(g, r, R.home('bin'), paste(.libPaths(), collapse=';'), sep='|')"
+          "paste(g, R.home('bin'), paste(.libPaths(), collapse=';'), sep='|')"
         )).strip()
         parts = s.split("|")
-        if len(parts) >= 4:
+        if len(parts) >= 3:
           rsrv_vG = parts[0]
-          rsrv_vR = parts[1]
-          rsrv_rhome = parts[2]
-          rsrv_libs = parts[3].split(";") if parts[3] else []
+          rsrv_rhome = parts[1]
+          rsrv_libs = parts[2].split(";") if parts[2] else []
       except Exception as e:
         self.ui.GPALogTextbox.insertPlainText(f"[Rserve] installed.packages() failed: {e}\n")
 
-    # Label
+    # --- Build label ---
     bits = []
     bits.append("Rserve connected" if conn else "Rserve not connected")
     if cli_ok:
-      bits.append(f"Rscript load test: RRPP {'OK' if cli_okR else 'FAIL'}, geomorph {'OK' if cli_okG else 'FAIL'}")
+      bits.append(f"Rscript load test: geomorph {'OK' if cli_okG else 'FAIL'}")
     else:
       bits.append("Rscript check failed")
 
     if conn:
-      if rsrv_vR:
-        bits.append(f"Rserve has RRPP {rsrv_vR}")
-      else:
-        bits.append("Rserve missing RRPP")
       if rsrv_vG:
-        bits.append(f"geomorph {rsrv_vG} (optional)")
+        bits.append(f"Rserve has geomorph {rsrv_vG}")
       else:
-        bits.append("geomorph not installed (optional)")
+        bits.append("Rserve missing geomorph")
 
     self._setLabel(self.ui.rGeomorphStatusLabel, " | ".join(bits))
 
-    # Detailed paths
+    # --- Detailed paths (diagnostics) ---
     self.ui.GPALogTextbox.insertPlainText(
       f"[Rscript] R.home(bin): {cli_rhome}\n"
       f"[Rscript] .libPaths():{_fmt(cli_libs)}\n"
     )
-    if not cli_ok:
-      self.ui.GPALogTextbox.insertPlainText(f"[Rscript] raw:\n{cli_info.get('raw', '(no output)')}\n")
     if conn:
       self.ui.GPALogTextbox.insertPlainText(
         f"[Rserve ] R.home(bin): {rsrv_rhome}\n"
         f"[Rserve ] .libPaths():{_fmt(rsrv_libs)}\n"
       )
 
-    # Gate: RRPP present in Rserve is sufficient to proceed
-    self._geomorph_ok = bool(conn) and bool(rsrv_vR)
+    # Gate: *geomorph present* in Rserve is sufficient to proceed
+    self._geomorph_ok = bool(conn) and bool(rsrv_vG)
     self._refreshButtons()
     try:
       self._lr_refreshFitButton()
@@ -3109,222 +3100,204 @@ class GPAWidget(ScriptedLoadableModuleWidget):
     return {b for b in bases if b not in drop}
 
   def _lr_onFitInRClicked(self):
-      """
-      Fit in R using shape regression with a plain matrix response (no arrayspecs),
-      and a robust fallback chain for the fitting routine:
+    """
+    Fit in R using geomorph::procD.lm with a proper geomorph.data.frame:
+      - Y is provided as *Coords* via arrayspecs(coords, p, k=3)
+      - Predictors (Size + any referenced covariates) are assembled in geomorph.data.frame
+      - Formula LHS is forced to 'Coords'
 
-        1) RRPP::procD.lm (newer RRPP)
-        2) RRPP::lm.rrpp  (older RRPP)
-        3) geomorph::procD.lm (as a last resort)
+    Steps are individually wrapped so errors/crashes are logged precisely.
+    """
+    import numpy as np
+    import pandas as pd
 
-      We build Y as an n × (3p) numeric matrix; predictors live in a data.frame (.df).
-      Every R step is wrapped so if Rserve crashes, the UI log shows *where* it failed.
-      """
-      import numpy as np
-      import pandas as pd
+    # ---- Guards ---------------------------------------------------------------
+    if not getattr(self, "LM", None):
+      self.ui.lrFitStatusLabel.setText("No GPA data")
+      return
 
-      # ---- Guards ---------------------------------------------------------------
-      if not getattr(self, "LM", None):
-        self.ui.lrFitStatusLabel.setText("No GPA data")
+    fml_raw = self._lr_getFormulaText()
+    ok, msg = self._lr_validateFormula(fml_raw)
+    if not ok:
+      self.ui.lrFitStatusLabel.setText("Invalid formula")
+      self.ui.GPALogTextbox.insertPlainText(f"[LR] Invalid formula: {msg}\n")
+      return
+
+    conn = getattr(self, "_r_conn", None)
+    if not conn:
+      self.ui.lrFitStatusLabel.setText("Rserve not connected")
+      return
+
+    # ---- Build response (coords) and Size -------------------------------------
+    arr = np.asarray(self.LM.lm)  # (p,3,n)
+    if arr.ndim != 3 or arr.shape[1] != 3:
+      self.ui.lrFitStatusLabel.setText("Bad landmark array")
+      self.ui.GPALogTextbox.insertPlainText(f"[LR] Unexpected LM.lm shape: {arr.shape}\n")
+      return
+    p, _, n = arr.shape
+
+    # coords as n × (3p)
+    coords_mat = arr.transpose(2, 0, 1).reshape(n, 3 * p, order="C")
+
+    size_vec = np.asarray(self.LM.centriodSize, dtype=float).reshape(-1)
+    if size_vec.shape[0] != n:
+      self.ui.lrFitStatusLabel.setText("Bad centroid size")
+      self.ui.GPALogTextbox.insertPlainText(f"[LR] centroid size length {size_vec.shape[0]} != specimens {n}\n")
+      return
+
+    # Specimen IDs (for aligning covariates)
+    files = list(self.files) if (hasattr(self, "files") and isinstance(self.files, (list, tuple)) and len(self.files) == n) \
+            else [f"spec_{i+1}" for i in range(n)]
+
+    # Covariates referenced in the formula (excluding 'Size' and LHS aliases)
+    base_vars = self._lr_get_base_variables_from_formula(fml_raw)
+    cov_df = None
+    cov_path = ""
+    if base_vars:
+      cov_path = self._lr_findCovariatesPath()
+      if not cov_path:
+        self.ui.lrFitStatusLabel.setText("Missing covariate table")
+        self.ui.GPALogTextbox.insertPlainText("[LR] No covariate CSV found; cannot satisfy formula variables.\n")
+        return
+      try:
+        cov_df = pd.read_csv(cov_path)
+        if cov_df.shape[1] < 2:
+          raise ValueError("Covariate CSV needs ID col + covariate columns.")
+        cov_df = cov_df.set_index(cov_df.columns[0])
+        missing = [f for f in files if f not in cov_df.index]
+        if missing:
+          raise ValueError(f"IDs missing in covariate table (first 10): {missing[:10]}")
+        cov_df = cov_df.loc[files]  # align to specimen order
+      except Exception as e:
+        self.ui.lrFitStatusLabel.setText("Covariate load error")
+        self.ui.GPALogTextbox.insertPlainText(f"[LR] Failed to read/align covariates: {e}\n")
         return
 
-      fml_raw = self._lr_getFormulaText()
-      ok, msg = self._lr_validateFormula(fml_raw)
-      if not ok:
-        self.ui.lrFitStatusLabel.setText("Invalid formula")
-        self.ui.GPALogTextbox.insertPlainText(f"[LR] Invalid formula: {msg}\n")
-        return
+    # Convenience
+    step = self._r_step
 
-      conn = getattr(self, "_r_conn", None)
-      if not conn:
-        self.ui.lrFitStatusLabel.setText("Rserve not connected")
-        return
+    # ---- Headless rgl (defensive) ---------------------------------------------
+    if not step(conn, "Headless rgl",
+                'options(rgl.useNULL=TRUE); '
+                'Sys.setenv(RGL_USE_NULL="TRUE"); '
+                'Sys.setenv(RGL_ALWAYS_SOFTWARE="TRUE")'):
+      self.ui.lrFitStatusLabel.setText("R data error (rgl)")
+      return
 
-      # ---- Build response Y (n × 3p) and Size ----------------------------------
-      arr = np.asarray(self.LM.lm)  # (p, 3, n)
-      if arr.ndim != 3 or arr.shape[1] != 3:
-        self.ui.lrFitStatusLabel.setText("Bad landmark array")
-        self.ui.GPALogTextbox.insertPlainText(f"[LR] Unexpected LM.lm shape: {arr.shape}\n")
-        return
-      p, _, n = arr.shape
-      Y = arr.transpose(2, 0, 1).reshape(n, 3 * p, order="C")  # n × 3p
+    # ---- Require geomorph (we rely on arrayspecs + procD.lm) -------------------
+    ok_pkg, _ = self._r_try(
+      'if (!"geomorph" %in% rownames(installed.packages())) '
+      '  stop("geomorph not installed in this Rserve")',
+      "check geomorph"
+    )
+    if not ok_pkg:
+      self.ui.lrFitStatusLabel.setText("geomorph missing")
+      return
 
-      size_vec = np.asarray(self.LM.centriodSize, dtype=float).reshape(-1)
-      if size_vec.shape[0] != n:
-        self.ui.lrFitStatusLabel.setText("Bad centroid size")
-        self.ui.GPALogTextbox.insertPlainText(f"[LR] centroid size length {size_vec.shape[0]} != specimens {n}\n")
-        return
+    # ---- Ship data to R --------------------------------------------------------
+    try:
+      conn.r.coords = coords_mat
+      conn.r.size   = size_vec
+    except Exception as e:
+      self.ui.lrFitStatusLabel.setText("R data error (send)")
+      self.ui.GPALogTextbox.insertPlainText(f"[LR] send coords/size: {repr(e)}\n")
+      return
 
-      # Specimen IDs for aligning covariates
-      if hasattr(self, "files") and isinstance(self.files, (list, tuple)) and len(self.files) == n:
-        files = list(self.files)
-      else:
-        files = [f"spec_{i + 1}" for i in range(n)]
+    # Ensure coords is numeric matrix; build arrayspecs
+    if not step(conn, "Prepare coords",
+                'coords <- base::as.matrix(coords); storage.mode(coords) <- "double"'):
+      self.ui.lrFitStatusLabel.setText("R data error (coords)")
+      return
+    if not step(conn, "arrayspecs",
+                f'arr <- geomorph::arrayspecs(coords, p={p}, k=3)'):
+      self.ui.lrFitStatusLabel.setText("R data error (arrayspecs)")
+      return
 
-      # ---- Non-Size predictors required by formula -----------------------------
-      base_vars = self._lr_get_base_variables_from_formula(fml_raw)  # excludes 'Size'
-      cov_df = None
-      cov_path = ""
-      if base_vars:
-        cov_path = self._lr_findCovariatesPath()
-        if not cov_path:
-          self.ui.lrFitStatusLabel.setText("Missing covariate table")
-          self.ui.GPALogTextbox.insertPlainText("[LR] No covariate CSV found; cannot satisfy formula variables.\n")
+    # ---- Create predictor variables in .GlobalEnv (numeric/factor) -------------
+    added_vars = []
+    if base_vars and cov_df is not None:
+      for var in sorted(base_vars):
+        if var not in cov_df.columns:
+          self.ui.lrFitStatusLabel.setText("Missing covariate column")
+          self.ui.GPALogTextbox.insertPlainText(f"[LR] Column '{var}' not found in covariate CSV.\n")
           return
+        series = cov_df[var]
+        tmpname = f'.py_{var}'
+        # numeric first
         try:
-          cov_df = pd.read_csv(cov_path)
-          if cov_df.shape[1] < 2:
-            raise ValueError("Covariate CSV needs ID col + covariate columns.")
-          cov_df = cov_df.set_index(cov_df.columns[0])
-          missing = [f for f in files if f not in cov_df.index]
-          if missing:
-            raise ValueError(f"IDs missing in covariate table (first 10): {missing[:10]}")
-          cov_df = cov_df.loc[files]  # align row order
-        except Exception as e:
-          self.ui.lrFitStatusLabel.setText("Covariate load error")
-          self.ui.GPALogTextbox.insertPlainText(f"[LR] Failed to read/align covariates: {e}\n")
-          return
-
-      step = self._r_step  # run one R statement with logging
-
-      # ---- Keep rgl headless (defensive; RRPP/geomorph don't need a display) ---
-      if not step(conn, "Headless rgl",
-                  'options(rgl.useNULL=TRUE); '
-                  'Sys.setenv(RGL_USE_NULL="TRUE"); '
-                  'Sys.setenv(RGL_ALWAYS_SOFTWARE="TRUE")'):
-        self.ui.lrFitStatusLabel.setText("R data error (rgl)")
-        return
-
-      # ---- Ship response and size to R ------------------------------------------
-      try:
-        conn.r.Y = Y
-        conn.r.size = size_vec
-      except Exception as e:
-        self.ui.lrFitStatusLabel.setText("R data error (send)")
-        self.ui.GPALogTextbox.insertPlainText(f"[LR] send Y/size: {repr(e)}\n")
-        return
-
-      # Ensure Y is numeric matrix
-      if not step(conn, "Prepare Y", 'Y <- base::as.matrix(Y); storage.mode(Y) <- "double"'):
-        self.ui.lrFitStatusLabel.setText("R data error (Y)")
-        return
-
-      # ---- Build predictor data.frame (.df) in R --------------------------------
-      if not step(conn, "Init .df", '.df <- base::data.frame(Size = base::as.numeric(size))'):
-        self.ui.lrFitStatusLabel.setText("R data error (.df)")
-        return
-
-      if base_vars and cov_df is not None:
-        for var in sorted(base_vars):
-          if var not in cov_df.columns:
-            self.ui.lrFitStatusLabel.setText("Missing covariate column")
-            self.ui.GPALogTextbox.insertPlainText(f"[LR] Column '{var}' not found in covariate CSV.\n")
+          s_num = pd.to_numeric(series, errors="raise").to_numpy().astype(float)
+          conn.r.__setattr__(tmpname, s_num)
+          if not step(conn, f"Set {var} (numeric)", f'{var} <- base::as.numeric({tmpname})'):
+            self.ui.lrFitStatusLabel.setText("R data error (covariate)")
             return
-          s = cov_df[var]
-          tmpname = f".py_{var}"
-          # numeric first
-          try:
-            s_num = pd.to_numeric(s, errors="raise").to_numpy().astype(float)
-            conn.r.__setattr__(tmpname, s_num)
-            if not step(conn, f"set .df${var} (num)", f'.df[["{var}"]] <- base::as.numeric({tmpname})'):
-              self.ui.lrFitStatusLabel.setText("R data error (.df set)")
-              return
-          except Exception:
-            conn.r.__setattr__(tmpname, s.astype(str).tolist())
-            if not step(conn, f"set .df${var} (factor)",
-                        f'.df[["{var}"]] <- base::factor(base::as.character(base::unlist({tmpname})))'):
-              self.ui.lrFitStatusLabel.setText("R data error (.df set)")
-              return
+        except Exception:
+          conn.r.__setattr__(tmpname, series.astype(str).tolist())
+          if not step(conn, f"Set {var} (factor)",
+                      f'{var} <- base::factor(base::as.character(base::unlist({tmpname})))'):
+            self.ui.lrFitStatusLabel.setText("R data error (covariate)")
+            return
+        added_vars.append(var)
 
-      # Basic sanity
-      if not step(conn, "check nrows",
-                  'if (base::nrow(.df) != base::nrow(Y)) '
-                  '  stop(sprintf("Row mismatch: nrow(.df)=%d, nrow(Y)=%d", nrow(.df), nrow(Y)))'):
-        self.ui.lrFitStatusLabel.setText("Row mismatch")
-        return
-      if not step(conn, "check NA",
-                  'if (any(!stats::complete.cases(.df))) '
-                  '  stop("Missing values in predictors are not allowed")'):
-        self.ui.lrFitStatusLabel.setText("Missing values")
-        return
+    # ---- Build a proper geomorph.data.frame ------------------------------------
+    pieces = ['Size=base::as.numeric(size)', 'Coords=arr']
+    for var in added_vars:
+      pieces.insert(1, f'{var}={var}')  # keep Coords last for readability
+    gdf_call = 'gdf <- geomorph::geomorph.data.frame(' + ', '.join(pieces) + ')'
+    if not step(conn, "Build gdf", gdf_call):
+      self.ui.lrFitStatusLabel.setText("R data error (gdf)")
+      return
 
-      # ---- Normalize LHS aliases to 'Y' and build formula -----------------------
-      import re as _re
-      fml = _re.sub(r'^\s*(Coords|Shape|SHAPE|shape)\s*~', 'Y ~', fml_raw.strip())
-      try:
-        conn.r.__setattr__('fml', fml)
-      except Exception as e:
-        self.ui.lrFitStatusLabel.setText("R data error (formula)")
-        self.ui.GPALogTextbox.insertPlainText(f"[LR] set fml: {repr(e)}\n")
-        return
+    # ---- Normalize LHS aliases to 'Coords' and build formula -------------------
+    import re as _re
+    fml = _re.sub(r'^\s*(Y|Coords|Shape|SHAPE|shape)\s*~', 'Coords ~', fml_raw.strip())
+    try:
+      conn.r.__setattr__('fml', fml)
+    except Exception as e:
+      self.ui.lrFitStatusLabel.setText("R data error (formula set)")
+      self.ui.GPALogTextbox.insertPlainText(f"[LR] set fml: {repr(e)}\n")
+      return
+    if not step(conn, "Build formula", 'mod <- stats::as.formula(fml)'):
+      self.ui.lrFitStatusLabel.setText("Bad formula")
+      return
 
-      if not step(conn, "build formula", 'mod <- stats::as.formula(fml)'):
-        self.ui.lrFitStatusLabel.setText("Bad formula")
-        return
-      if not step(conn, "predictor presence",
-                  'miss <- base::setdiff(all.vars(mod)[-1], base::names(.df)); '
-                  'if (length(miss)) stop(paste("Predictors missing in .df:", paste(miss, collapse=", ")))'):
-        self.ui.lrFitStatusLabel.setText("Predictor mismatch")
-        return
+    # ---- Fit with geomorph::procD.lm -------------------------------------------
+    if not step(conn, "Fit procD.lm", 'outlm <- geomorph::procD.lm(mod, data=gdf)'):
+      self.ui.lrFitStatusLabel.setText("Fit failed")
+      return
 
-      # ---- Fit with robust fallback (RRPP new -> RRPP old -> geomorph) ----------
-      fit_code = r'''
-  if ("RRPP" %in% rownames(installed.packages())) {
-    # Prefer RRPP::procD.lm if present (newer RRPP)
-    if (exists("procD.lm", where=asNamespace("RRPP"), inherits=FALSE)) {
-      fit <- geomorph::procD.lm(mod, data=.df)
-    } else if (exists("lm.rrpp", where=asNamespace("RRPP"), inherits=FALSE)) {
-      # Older RRPP API
-      fit <- RRPP::lm.rrpp(mod, data=.df)
-    } else {
-      stop("RRPP installed, but neither procD.lm nor lm.rrpp is exported.")
+    # ---- Extract coefficients / names ------------------------------------------
+    if not step(conn, "Extract coefficients",
+                'coef_mat <- outlm$coefficients; '
+                'coef_names <- base::rownames(coef_mat)'):
+      self.ui.lrFitStatusLabel.setText("Extract error")
+      return
+
+    # ---- Pull back to Python ----------------------------------------------------
+    try:
+      coef_mat = np.asarray(conn.eval('coef_mat'))
+      coef_names = list(conn.eval('as.character(coef_names)'))
+    except Exception as e:
+      self.ui.lrFitStatusLabel.setText("Pull-back error")
+      self.ui.GPALogTextbox.insertPlainText(f"[LR] pull coef: {repr(e)}\n")
+      return
+
+    # ---- Cache for downstream use ----------------------------------------------
+    self._lr_last_fit = {
+      "formula": fml,
+      "coef_mat": coef_mat,
+      "coef_names": coef_names,
+      "n_specimens": n,
+      "p_landmarks": p,
+      "covariates": [
+        (v, ("numeric" if (cov_df is not None and pd.api.types.is_numeric_dtype(cov_df[v])) else "factor"))
+        for v in sorted(base_vars)
+      ] if base_vars else [],
+      "covariate_path": cov_path
     }
-  } else if ("geomorph" %in% rownames(installed.packages()) &&
-             exists("procD.lm", where=asNamespace("geomorph"), inherits=FALSE)) {
-    # Last resort: geomorph’s procD.lm also accepts a matrix response
-    fit <- geomorph::procD.lm(mod, data=.df)
-  } else {
-    stop("No suitable procD.lm/lm.rrpp found in RRPP/geomorph.")
-  }
-  '''
-      if not step(conn, "fit (RRPP/geomorph)", fit_code):
-        self.ui.lrFitStatusLabel.setText("Fit failed")
-        return
+    print(f"[LR] geomorph::procD.lm OK: coef_mat {coef_mat.shape}, terms={len(coef_names)}")
+    self.ui.lrFitStatusLabel.setText("Fit complete")
 
-      # ---- Extract coefficients / names (defensive across APIs) -----------------
-      extract_code = r'''
-  coef_mat <- if (!is.null(fit$coefficients)) fit$coefficients else base::as.matrix(stats::coef(fit))
-  X <- stats::model.matrix(mod, data=.df)
-  coef_names <- if (!is.null(base::rownames(coef_mat))) base::rownames(coef_mat) else base::colnames(X)
-  '''
-      if not step(conn, "extract", extract_code):
-        self.ui.lrFitStatusLabel.setText("Extract error")
-        return
 
-      # ---- Pull back to Python --------------------------------------------------
-      try:
-        coef_mat = np.asarray(conn.eval('coef_mat'))
-        coef_names = list(conn.eval('as.character(coef_names)'))
-      except Exception as e:
-        self.ui.lrFitStatusLabel.setText("Pull-back error")
-        self.ui.GPALogTextbox.insertPlainText(f"[LR] pull coef: {repr(e)}\n")
-        return
-
-      # ---- Cache for downstream use --------------------------------------------
-      self._lr_last_fit = {
-        "formula": fml,
-        "coef_mat": coef_mat,
-        "coef_names": coef_names,
-        "n_specimens": n,
-        "p_landmarks": p,
-        "covariates": [
-          (v, ("numeric" if (cov_df is not None and pd.api.types.is_numeric_dtype(cov_df[v])) else "factor"))
-          for v in sorted(base_vars)
-        ] if base_vars else [],
-        "covariate_path": cov_path
-      }
-      print(f"[LR] Regression OK: coef_mat {coef_mat.shape}, terms={len(coef_names)}")
-      self.ui.lrFitStatusLabel.setText("Fit complete")
 
   def _r_try(self, code: str, tag: str = ""):
     """
