@@ -3272,7 +3272,7 @@ class GPAWidget(ScriptedLoadableModuleWidget):
   if ("RRPP" %in% rownames(installed.packages())) {
     # Prefer RRPP::procD.lm if present (newer RRPP)
     if (exists("procD.lm", where=asNamespace("RRPP"), inherits=FALSE)) {
-      fit <- RRPP::procD.lm(mod, data=.df)
+      fit <- geomorph::procD.lm(mod, data=.df)
     } else if (exists("lm.rrpp", where=asNamespace("RRPP"), inherits=FALSE)) {
       # Older RRPP API
       fit <- RRPP::lm.rrpp(mod, data=.df)
