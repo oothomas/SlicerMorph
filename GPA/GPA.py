@@ -471,6 +471,7 @@ class GPAWidget(ScriptedLoadableModuleWidget):
     # Initialize the LR tab UI (safe no-op if tab not present)
     self._lr_initTab()
     self._r_initPanel()
+    self._coef_initUI()
 
     # Add custom layout buttons to menu
     self.addLayoutButton(500, 'GPA Module View', 'Custom layout for GPA module', 'LayoutSlicerMorphView.png', slicer.customLayoutSM)
@@ -2855,26 +2856,25 @@ class GPAWidget(ScriptedLoadableModuleWidget):
 
   def _r_onCheckGeomorph(self):
     """
-    Status: RRPP is required; geomorph is optional.
+    Status for a *geomorph-first* workflow:
     - Rscript self-test is informative only (won't block fitting).
-    - If connected to Rserve, we list versions from installed.packages() (no loading).
+    - If connected to Rserve, list geomorph version from installed.packages() (no loading).
+    - Gate "Fit" on *geomorph present in Rserve*.
     """
 
     def _fmt(xs):
       return ("\n  - " + "\n  - ".join(xs)) if xs else " (none)"
 
-    # Safe CLI load test (robust parser)
+    # --- CLI check (informative) ---
     cli_ok, cli_info = self._r_cli_pkg_selftest()
     cli_rhome = cli_info.get("r_home", "?")
     cli_libs = cli_info.get("libpaths", [])
     cli_okG = cli_info.get("load_ok", {}).get("geomorph", False)
-    cli_okR = cli_info.get("load_ok", {}).get("RRPP", False)
-    cli_vG = cli_info.get("geomorph", "")
-    cli_vR = cli_info.get("RRPP", "")
+    cli_vG  = cli_info.get("geomorph", "")
 
-    # Rserve: what's installed (no load)
+    # --- Rserve check: installed versions (no load) ---
     conn = getattr(self, "_r_conn", None)
-    rsrv_vG = rsrv_vR = ""
+    rsrv_vG = ""
     rsrv_rhome = "?"
     rsrv_libs = []
     if conn:
@@ -2882,53 +2882,45 @@ class GPAWidget(ScriptedLoadableModuleWidget):
         s = str(conn.eval(
           "ip <- rownames(installed.packages());"
           "g <- if ('geomorph' %in% ip) as.character(packageVersion('geomorph')) else '';"
-          "r <- if ('RRPP'     %in% ip) as.character(packageVersion('RRPP'))     else '';"
-          "paste(g, r, R.home('bin'), paste(.libPaths(), collapse=';'), sep='|')"
+          "paste(g, R.home('bin'), paste(.libPaths(), collapse=';'), sep='|')"
         )).strip()
         parts = s.split("|")
-        if len(parts) >= 4:
+        if len(parts) >= 3:
           rsrv_vG = parts[0]
-          rsrv_vR = parts[1]
-          rsrv_rhome = parts[2]
-          rsrv_libs = parts[3].split(";") if parts[3] else []
+          rsrv_rhome = parts[1]
+          rsrv_libs = parts[2].split(";") if parts[2] else []
       except Exception as e:
         self.ui.GPALogTextbox.insertPlainText(f"[Rserve] installed.packages() failed: {e}\n")
 
-    # Label
+    # --- Build label ---
     bits = []
     bits.append("Rserve connected" if conn else "Rserve not connected")
     if cli_ok:
-      bits.append(f"Rscript load test: RRPP {'OK' if cli_okR else 'FAIL'}, geomorph {'OK' if cli_okG else 'FAIL'}")
+      bits.append(f"Rscript load test: geomorph {'OK' if cli_okG else 'FAIL'}")
     else:
       bits.append("Rscript check failed")
 
     if conn:
-      if rsrv_vR:
-        bits.append(f"Rserve has RRPP {rsrv_vR}")
-      else:
-        bits.append("Rserve missing RRPP")
       if rsrv_vG:
-        bits.append(f"geomorph {rsrv_vG} (optional)")
+        bits.append(f"Rserve has geomorph {rsrv_vG}")
       else:
-        bits.append("geomorph not installed (optional)")
+        bits.append("Rserve missing geomorph")
 
     self._setLabel(self.ui.rGeomorphStatusLabel, " | ".join(bits))
 
-    # Detailed paths
+    # --- Detailed paths (diagnostics) ---
     self.ui.GPALogTextbox.insertPlainText(
       f"[Rscript] R.home(bin): {cli_rhome}\n"
       f"[Rscript] .libPaths():{_fmt(cli_libs)}\n"
     )
-    if not cli_ok:
-      self.ui.GPALogTextbox.insertPlainText(f"[Rscript] raw:\n{cli_info.get('raw', '(no output)')}\n")
     if conn:
       self.ui.GPALogTextbox.insertPlainText(
         f"[Rserve ] R.home(bin): {rsrv_rhome}\n"
         f"[Rserve ] .libPaths():{_fmt(rsrv_libs)}\n"
       )
 
-    # Gate: RRPP present in Rserve is sufficient to proceed
-    self._geomorph_ok = bool(conn) and bool(rsrv_vR)
+    # Gate: *geomorph present* in Rserve is sufficient to proceed
+    self._geomorph_ok = bool(conn) and bool(rsrv_vG)
     self._refreshButtons()
     try:
       self._lr_refreshFitButton()
@@ -3110,10 +3102,12 @@ class GPAWidget(ScriptedLoadableModuleWidget):
 
   def _lr_onFitInRClicked(self):
     """
-    Fit in R using RRPP::procD.lm with a plain matrix response (no geomorph).
-    - Y is an n × (3p) numeric matrix (coords flattened); predictors live in a data.frame (.df).
-    - This avoids arrayspecs() and any attempt to load the 'geomorph' DLLs that are segfaulting.
-    - Each R step is wrapped so if Rserve crashes, the UI log shows exactly where.
+    Fit in R using geomorph::procD.lm with a proper geomorph.data.frame:
+      - Y is provided as *Coords* via arrayspecs(coords, p, k=3)
+      - Predictors (Size + any referenced covariates) are assembled in geomorph.data.frame
+      - Formula LHS is forced to 'Coords'
+
+    Steps are individually wrapped so errors/crashes are logged precisely.
     """
     import numpy as np
     import pandas as pd
@@ -3135,14 +3129,16 @@ class GPAWidget(ScriptedLoadableModuleWidget):
       self.ui.lrFitStatusLabel.setText("Rserve not connected")
       return
 
-    # ---- Build response Y (n × 3p) and Size ----------------------------------
-    arr = np.asarray(self.LM.lm)  # (p, 3, n)
+    # ---- Build response (coords) and Size -------------------------------------
+    arr = np.asarray(self.LM.lm)  # (p,3,n)
     if arr.ndim != 3 or arr.shape[1] != 3:
       self.ui.lrFitStatusLabel.setText("Bad landmark array")
       self.ui.GPALogTextbox.insertPlainText(f"[LR] Unexpected LM.lm shape: {arr.shape}\n")
       return
     p, _, n = arr.shape
-    Y = arr.transpose(2, 0, 1).reshape(n, 3 * p, order="C")  # n × 3p
+
+    # coords as n × (3p)
+    coords_mat = arr.transpose(2, 0, 1).reshape(n, 3 * p, order="C")
 
     size_vec = np.asarray(self.LM.centriodSize, dtype=float).reshape(-1)
     if size_vec.shape[0] != n:
@@ -3150,10 +3146,12 @@ class GPAWidget(ScriptedLoadableModuleWidget):
       self.ui.GPALogTextbox.insertPlainText(f"[LR] centroid size length {size_vec.shape[0]} != specimens {n}\n")
       return
 
-    files = list(getattr(self, "files", [])) or [f"spec_{i + 1}" for i in range(n)]
+    # Specimen IDs (for aligning covariates)
+    files = list(self.files) if (hasattr(self, "files") and isinstance(self.files, (list, tuple)) and len(self.files) == n) \
+            else [f"spec_{i+1}" for i in range(n)]
 
-    # ---- Non-Size predictors required by formula -----------------------------
-    base_vars = self._lr_get_base_variables_from_formula(fml_raw)  # excludes 'Size'
+    # Covariates referenced in the formula (excluding 'Size' and LHS aliases)
+    base_vars = self._lr_get_base_variables_from_formula(fml_raw)
     cov_df = None
     cov_path = ""
     if base_vars:
@@ -3176,9 +3174,10 @@ class GPAWidget(ScriptedLoadableModuleWidget):
         self.ui.GPALogTextbox.insertPlainText(f"[LR] Failed to read/align covariates: {e}\n")
         return
 
-    step = self._r_step  # run one R command, log errors precisely
+    # Convenience
+    step = self._r_step
 
-    # ---- Keep rgl headless (defensive; RRPP itself doesn't need it) ----------
+    # ---- Headless rgl (defensive) ---------------------------------------------
     if not step(conn, "Headless rgl",
                 'options(rgl.useNULL=TRUE); '
                 'Sys.setenv(RGL_USE_NULL="TRUE"); '
@@ -3186,102 +3185,95 @@ class GPAWidget(ScriptedLoadableModuleWidget):
       self.ui.lrFitStatusLabel.setText("R data error (rgl)")
       return
 
-    # ---- Require RRPP (we do NOT load/require geomorph here) ------------------
-    ok, _ = self._r_try('if (!"RRPP" %in% rownames(installed.packages())) '
-                        'stop("RRPP not installed in this Rserve")',
-                        "check RRPP")
-    if not ok:
-      self.ui.lrFitStatusLabel.setText("RRPP missing")
+    # ---- Require geomorph (we rely on arrayspecs + procD.lm) -------------------
+    ok_pkg, _ = self._r_try(
+      'if (!"geomorph" %in% rownames(installed.packages())) '
+      '  stop("geomorph not installed in this Rserve")',
+      "check geomorph"
+    )
+    if not ok_pkg:
+      self.ui.lrFitStatusLabel.setText("geomorph missing")
       return
 
-    # ---- Ship response and size to R ------------------------------------------
+    # ---- Ship data to R --------------------------------------------------------
     try:
-      conn.r.Y = Y
-      conn.r.size = size_vec
+      conn.r.coords = coords_mat
+      conn.r.size   = size_vec
     except Exception as e:
       self.ui.lrFitStatusLabel.setText("R data error (send)")
-      self.ui.GPALogTextbox.insertPlainText(f"[LR] send Y/size: {repr(e)}\n")
+      self.ui.GPALogTextbox.insertPlainText(f"[LR] send coords/size: {repr(e)}\n")
       return
 
-    # Ensure Y is numeric matrix
-    if not step(conn, "Prepare Y", 'Y <- base::as.matrix(Y); storage.mode(Y) <- "double"'):
-      self.ui.lrFitStatusLabel.setText("R data error (Y)")
+    # Ensure coords is numeric matrix; build arrayspecs
+    if not step(conn, "Prepare coords",
+                'coords <- base::as.matrix(coords); storage.mode(coords) <- "double"'):
+      self.ui.lrFitStatusLabel.setText("R data error (coords)")
+      return
+    if not step(conn, "arrayspecs",
+                f'arr <- geomorph::arrayspecs(coords, p={p}, k=3)'):
+      self.ui.lrFitStatusLabel.setText("R data error (arrayspecs)")
       return
 
-    # ---- Build predictor data.frame (.df) in R --------------------------------
-    if not step(conn, "Init .df", '.df <- base::data.frame(Size = base::as.numeric(size))'):
-      self.ui.lrFitStatusLabel.setText("R data error (.df)")
-      return
-
+    # ---- Create predictor variables in .GlobalEnv (numeric/factor) -------------
+    added_vars = []
     if base_vars and cov_df is not None:
       for var in sorted(base_vars):
         if var not in cov_df.columns:
           self.ui.lrFitStatusLabel.setText("Missing covariate column")
           self.ui.GPALogTextbox.insertPlainText(f"[LR] Column '{var}' not found in covariate CSV.\n")
           return
-        s = cov_df[var]
-        tmpname = f".py_{var}"
+        series = cov_df[var]
+        tmpname = f'.py_{var}'
         # numeric first
         try:
-          s_num = pd.to_numeric(s, errors="raise").to_numpy().astype(float)
+          s_num = pd.to_numeric(series, errors="raise").to_numpy().astype(float)
           conn.r.__setattr__(tmpname, s_num)
-          ok = step(conn, f"set .df${var} (num)", f'.df[["{var}"]] <- base::as.numeric({tmpname})')
+          if not step(conn, f"Set {var} (numeric)", f'{var} <- base::as.numeric({tmpname})'):
+            self.ui.lrFitStatusLabel.setText("R data error (covariate)")
+            return
         except Exception:
-          conn.r.__setattr__(tmpname, s.astype(str).tolist())
-          ok = step(conn, f"set .df${var} (factor)",
-                    f'.df[["{var}"]] <- base::factor(base::as.character(base::unlist({tmpname})))')
-        if not ok:
-          self.ui.lrFitStatusLabel.setText("R data error (.df set)")
-          return
+          conn.r.__setattr__(tmpname, series.astype(str).tolist())
+          if not step(conn, f"Set {var} (factor)",
+                      f'{var} <- base::factor(base::as.character(base::unlist({tmpname})))'):
+            self.ui.lrFitStatusLabel.setText("R data error (covariate)")
+            return
+        added_vars.append(var)
 
-    # Basic sanity
-    if not step(conn, "check nrows",
-                'if (base::nrow(.df) != base::nrow(Y)) '
-                '  stop(sprintf("Row mismatch: nrow(.df)=%d, nrow(Y)=%d", nrow(.df), nrow(Y)))'):
-      self.ui.lrFitStatusLabel.setText("Row mismatch")
-      return
-    if not step(conn, "check NA",
-                'if (any(!stats::complete.cases(.df))) '
-                '  stop("Missing values in predictors are not allowed")'):
-      self.ui.lrFitStatusLabel.setText("Missing values")
+    # ---- Build a proper geomorph.data.frame ------------------------------------
+    pieces = ['Size=base::as.numeric(size)', 'Coords=arr']
+    for var in added_vars:
+      pieces.insert(1, f'{var}={var}')  # keep Coords last for readability
+    gdf_call = 'gdf <- geomorph::geomorph.data.frame(' + ', '.join(pieces) + ')'
+    if not step(conn, "Build gdf", gdf_call):
+      self.ui.lrFitStatusLabel.setText("R data error (gdf)")
       return
 
-    # ---- Normalize LHS aliases to 'Y' and build formula -----------------------
+    # ---- Normalize LHS aliases to 'Coords' and build formula -------------------
     import re as _re
-    fml = _re.sub(r'^\s*(Coords|Shape|SHAPE|shape)\s*~', 'Y ~', fml_raw.strip())
+    fml = _re.sub(r'^\s*(Y|Coords|Shape|SHAPE|shape)\s*~', 'Coords ~', fml_raw.strip())
     try:
       conn.r.__setattr__('fml', fml)
     except Exception as e:
-      self.ui.lrFitStatusLabel.setText("R data error (formula)")
+      self.ui.lrFitStatusLabel.setText("R data error (formula set)")
       self.ui.GPALogTextbox.insertPlainText(f"[LR] set fml: {repr(e)}\n")
       return
-
-    if not step(conn, "build formula", 'mod <- stats::as.formula(fml)'):
+    if not step(conn, "Build formula", 'mod <- stats::as.formula(fml)'):
       self.ui.lrFitStatusLabel.setText("Bad formula")
       return
-    if not step(conn, "predictor presence",
-                'miss <- base::setdiff(all.vars(mod)[-1], base::names(.df)); '
-                'if (length(miss)) stop(paste("Predictors missing in .df:", paste(miss, collapse=", ")))'):
-      self.ui.lrFitStatusLabel.setText("Predictor mismatch")
+
+    # ---- Fit with geomorph::procD.lm -------------------------------------------
+    if not step(conn, "Fit procD.lm", 'outlm <- geomorph::procD.lm(mod, data=gdf)'):
+      self.ui.lrFitStatusLabel.setText("Fit failed")
       return
 
-    # ---- Fit with RRPP ONLY ---------------------------------------------------
-    if not step(conn, "fit procD.lm", 'fit <- RRPP::procD.lm(mod, data=.df)'):
-      self.ui.lrFitStatusLabel.setText("Fit failed/crashed")
-      self.ui.GPALogTextbox.insertPlainText(
-        "[LR] Rserve died while fitting. This almost always indicates a broken compiled package in your R.\n"
-        "     Because we avoided 'geomorph', check RRPP and its compiled deps in the R shown above (Rserve R.home).\n"
-      )
-      return
-
-    # ---- Extract coefficients / names -----------------------------------------
-    if not step(conn, "extract",
-                'coef_mat <- fit$coefficients; '
-                'X <- stats::model.matrix(mod, data=.df); '
-                'coef_names <- if (!is.null(base::rownames(coef_mat))) base::rownames(coef_mat) else base::colnames(X)'):
+    # ---- Extract coefficients / names ------------------------------------------
+    if not step(conn, "Extract coefficients",
+                'coef_mat <- outlm$coefficients; '
+                'coef_names <- base::rownames(coef_mat)'):
       self.ui.lrFitStatusLabel.setText("Extract error")
       return
 
+    # ---- Pull back to Python ----------------------------------------------------
     try:
       coef_mat = np.asarray(conn.eval('coef_mat'))
       coef_names = list(conn.eval('as.character(coef_names)'))
@@ -3290,19 +3282,28 @@ class GPAWidget(ScriptedLoadableModuleWidget):
       self.ui.GPALogTextbox.insertPlainText(f"[LR] pull coef: {repr(e)}\n")
       return
 
-    # ---- Cache for downstream use --------------------------------------------
+    # ---- Cache for downstream use ----------------------------------------------
     self._lr_last_fit = {
       "formula": fml,
       "coef_mat": coef_mat,
       "coef_names": coef_names,
       "n_specimens": n,
       "p_landmarks": p,
-      "covariates": [(v, ("numeric" if (cov_df is not None and pd.api.types.is_numeric_dtype(cov_df[v])) else "factor"))
-                     for v in sorted(base_vars)] if base_vars else [],
+      "covariates": [
+        (v, ("numeric" if (cov_df is not None and pd.api.types.is_numeric_dtype(cov_df[v])) else "factor"))
+        for v in sorted(base_vars)
+      ] if base_vars else [],
       "covariate_path": cov_path
     }
-    print(f"[LR] RRPP::procD.lm OK: coef_mat {coef_mat.shape}, terms={len(coef_names)}")
+    print(f"[LR] geomorph::procD.lm OK: coef_mat {coef_mat.shape}, terms={len(coef_names)}")
     self.ui.lrFitStatusLabel.setText("Fit complete")
+
+    print(self._lr_last_fit)
+
+    try:
+      self._coef_refreshFromFit()
+    except Exception:
+      pass
 
   def _r_try(self, code: str, tag: str = ""):
     """
@@ -3419,6 +3420,594 @@ class GPAWidget(ScriptedLoadableModuleWidget):
 
     except Exception as e:
       return (False, {"error": repr(e), "rscript": rscript})
+
+  def _coef_initUI(self):
+    """
+    Coefficient Visualization panel:
+     - Uses its own controller
+     - Adds a 'Initialize LR Warping' button (programmatic, no .ui edit needed)
+     - Creates a dedicated LR grid transform (separate from PCA)
+    """
+    if not hasattr(self.ui, "coefVisualizationParametersButton"):
+      self._coef_enabled = False
+      return
+
+    self._coef_enabled = True
+    self._coef_vectors = []
+    self._coef_names = []
+    self._coef_absmax = 1.0
+    self._coef_magnify = 1.0
+    self._coef_current = -1
+
+    # Controller with live sync
+    try:
+      self.coefController = PCSliderController(
+        comboBox=self.ui.coefComboBox,
+        slider=self.ui.coefSlider,
+        spinBox=self.ui.coefSpinBox,
+        dynamic_min=-1.0,
+        dynamic_max=1.0,
+        onSliderChanged=lambda _: self._coef_updateScaling(),
+        onComboBoxChanged=lambda _: self._coef_onSelectCoefficient(),
+      )
+    except Exception:
+      self.coefController = None
+
+    # Buttons & spin
+    try:
+      self.ui.coefUpdateMagnificationButton.clicked.connect(self._coef_setMagnification)
+    except Exception:
+      pass
+    try:
+      self.ui.coefResetButton.clicked.connect(self._coef_resetView)
+    except Exception:
+      pass
+    try:
+      self.ui.coefMagnificationSpin.setValue(1.0)
+    except Exception:
+      pass
+
+    # Add an 'Initialize LR Warping' button programmatically
+    try:
+      self.lrInitWarpButton = qt.QPushButton("Initialize LR Warping")
+      self.lrInitWarpButton.setToolTip("Create LR grid + LR warped landmarks and show them in View 2.")
+      self.lrInitWarpButton.clicked.connect(self._lr_prepareWarpInfra)
+      self.ui.coefVisualizationParametersLayout.addWidget(self.lrInitWarpButton, 4, 0, 1, 3)
+    except Exception:
+      pass
+
+    # Defaults
+    try:
+      # Make LR effects visible without user intervention
+      self.ui.coefMagnificationSpin.setDecimals(2)
+      self.ui.coefMagnificationSpin.setMinimum(0.01)
+      self.ui.coefMagnificationSpin.setMaximum(1_000_000.0)
+      self.ui.coefMagnificationSpin.setSingleStep(10.0)
+      self.ui.coefMagnificationSpin.setValue(1000.0)  # <<— like the working script (MAGNIFY)
+    except Exception:
+      pass
+
+    # Dedicated LR grid node (separate from PCA)
+    self._ensureLRGridNode()
+
+    # Start with empty choices until a fit completes
+    if self.coefController:
+      self.coefController.setRange(-1.0, 1.0)
+      self.coefController.setValue(0.0)
+
+  def _coef_refreshFromFit(self):
+    """Populate Coefficient UI from last fit and initialize LR TPS warping."""
+    if not getattr(self, "_coef_enabled", False):
+      return
+    last = getattr(self, "_lr_last_fit", None)
+    if not last:
+      self._coef_clearChoices()
+      return
+
+    import numpy as np
+    coef_mat = np.asarray(last.get("coef_mat", []))
+    coef_names = list(last.get("coef_names", []))
+    if coef_mat.ndim != 2 or len(coef_names) != coef_mat.shape[0]:
+      self._coef_clearChoices()
+      return
+
+    # Cache rows as flat 3p vectors
+    self._coef_vectors = [np.asarray(coef_mat[i, :]).reshape(-1).copy()
+                          for i in range(coef_mat.shape[0])]
+    self._coef_names = [str(n) for n in coef_names]
+
+    # Prefer first non-intercept term (e.g., “Size”)
+    first_term = 0
+    for i, nm in enumerate(self._coef_names):
+      if nm.strip() != "(Intercept)":
+        first_term = i
+        break
+    self._coef_current = int(first_term)
+
+    # Populate UI and force selection to first_term
+    if self.coefController:
+      self.coefController.populateComboBox(self._coef_names)
+      try:
+        self.ui.coefComboBox.setCurrentIndex(self._coef_current)
+      except Exception:
+        pass
+      self.coefController.setRange(-1.0, 1.0)
+      self.coefController.setValue(0.0)
+
+    # Ensure LR infra + TPS node
+    self._lr_prepareWarpInfra()
+    self._ensureLRTPSNode()
+
+    # Build identity TPS at scale 0 so slider works immediately
+    try:
+      self._coef_applyTPS(scale=0.0)
+    except Exception as e:
+      self._lr_log(f"[LR/COEF] initial TPS build failed: {e}")
+
+    # Attach targets and mark ready
+    self._coef_attachTargets(enabled=True)
+    self._coef_updateScaling()
+
+  def _coef_onSelectCoefficient(self):
+    """Combobox changed → pick the selected coefficient and rebuild TPS at 0."""
+    if not getattr(self, "_coef_enabled", False):
+      return
+
+    # Robust index read (PythonQt can expose property, not a callable)
+    try:
+      idx = int(self.coefController.comboBoxIndex())
+    except Exception:
+      idx = -1
+
+    if idx < 0 or idx >= len(getattr(self, "_coef_vectors", [])):
+      # Don’t poison state with -1; just ignore spurious signals
+      return
+
+    self._coef_current = idx
+
+    # Reset slider to 0 for new coefficient
+    try:
+      if self.coefController:
+        self.coefController.setValue(0.0)
+    except Exception:
+      pass
+
+    # Rebuild TPS at 0 and attach
+    try:
+      self._coef_applyTPS(scale=0.0)
+    except Exception as e:
+      self._lr_log(f"[LR/COEF] TPS build (new coef) failed: {e}")
+    self._coef_attachTargets(enabled=True)
+
+  def _coef_setMagnification(self):
+    """Magnification spin changed → rebuild TPS at current slider scale."""
+    if not getattr(self, "_coef_enabled", False):
+      return
+
+    # Read current slider scale in [-1, 1]
+    try:
+      scale = float(self.coefController.sliderValue())
+    except Exception:
+      scale = 0.0
+    if scale > 1.0:  scale = 1.0
+    if scale < -1.0: scale = -1.0
+
+    try:
+      self._coef_applyTPS(scale=scale)
+    except Exception as e:
+      self._lr_log(f"[LR/COEF] TPS rebuild (magnification) failed: {e}")
+
+  def _coef_updateScaling(self):
+    """Slider moved → rebuild LR TPS with selected coefficient and slider scale."""
+    if not getattr(self, "_coef_enabled", False):
+      return
+
+    try:
+      val = float(self.coefController.sliderValue())
+    except Exception:
+      val = 0.0
+    if val > 1.0:  val = 1.0
+    if val < -1.0: val = -1.0
+
+    try:
+      self._coef_applyTPS(scale=val)
+    except Exception as e:
+      self._lr_log(f"[LR/COEF] TPS rebuild (scale) failed: {e}")
+
+  def _coef_buildGridTransform(self):
+    """
+    Build/update a TPS-based displacement grid for the currently-selected
+    coefficient and install it into the LR grid transform. The TPS maps
+    mean -> mean+shift so that applying the grid deforms landmarks away
+    from the mean when scale != 0.
+    """
+    import numpy as np
+    logic = GPALogic()
+
+    if self._coef_current is None or self._coef_current < 0:
+      self._lr_log("[LR/COEF] no current coefficient selected")
+      return
+    if getattr(self, "rawMeanLandmarks", None) is None:
+      self._lr_log("[LR/COEF] rawMeanLandmarks missing")
+      return
+    if not (getattr(self, "_coef_vectors", None) and len(self._coef_vectors) > self._coef_current):
+      self._lr_log("[LR/COEF] coefficient vectors not available yet")
+      return
+
+    row = np.asarray(self._coef_vectors[self._coef_current]).reshape(-1)
+    shift = self._coef_row_to_shift(row)  # (p,3)
+    target = self.rawMeanLandmarks + shift
+
+    # TPS: source = mean, target = mean+shift  (so points at the mean will move)
+    tps = vtk.vtkThinPlateSplineTransform()
+    tps.SetSourceLandmarks(logic.convertNumpyToVTK(self.rawMeanLandmarks))
+    tps.SetTargetLandmarks(logic.convertNumpyToVTK(target))
+    tps.SetBasisToR()
+
+    # Bounds from LR warp node (create infra if missing)
+    bounds_node = getattr(self, "lrWarpNode", None)
+    if bounds_node is None:
+      self._lr_log("[LR/COEF] lrWarpNode missing; initializing LR warp infra")
+      self._lr_prepareWarpInfra()
+      bounds_node = getattr(self, "lrWarpNode", None)
+      if bounds_node is None:
+        self._lr_log("[LR/COEF] still no lrWarpNode; aborting grid build")
+        return
+
+    b = self.getExpandedBounds(bounds_node, paddingFactor=0.1)
+    origin = (b[0], b[2], b[4])
+    size = (b[1] - b[0], b[3] - b[2], b[5] - b[4])
+
+    dim = 50
+    extent = [0, dim - 1, 0, dim - 1, 0, dim - 1]
+    spacing = (size[0] / dim, size[1] / dim, size[2] / dim)
+
+    toGrid = vtk.vtkTransformToGrid()
+    toGrid.SetInput(tps)
+    toGrid.SetGridOrigin(origin)
+    toGrid.SetGridSpacing(spacing)
+    toGrid.SetGridExtent(extent)
+    toGrid.Update()
+
+    node = self._ensureLRGridNode()
+    node.GetTransformFromParent().SetDisplacementGridData(toGrid.GetOutput())
+    node.GetTransformFromParent().SetDisplacementScale(0.0)
+    try:
+      node.Modified()
+    except Exception:
+      pass
+
+    # Ensure targets are attached after (re)build
+    self._coef_attachTargets(enabled=True)
+
+    # Sanity: at scale=1, LM1 should move roughly by 'shift[0]'
+    tf = node.GetTransformFromParent()
+    try:
+      orig = tf.GetDisplacementScale()
+      tf.SetDisplacementScale(1.0)
+      p0 = np.asarray(self.rawMeanLandmarks[0, :], dtype=float)
+      out = [0.0, 0.0, 0.0]
+      tf.TransformPoint(p0.tolist(), out)
+      d = np.asarray(out) - p0
+      self._lr_log(f"[LR/COEF] sample delta @ LM1, scale=1: ({d[0]:.6g}, {d[1]:.6g}, {d[2]:.6g})")
+      tf.SetDisplacementScale(orig)
+    except Exception:
+      pass
+
+    self._coef_debugPipeline(tag="after_grid_build", sample_scale=1.0)
+
+  def _coef_resetView(self):
+    """Reset LR coefficient warping to identity (slider -> 0, TPS -> identity)."""
+    if self.coefController:
+      self.coefController.setValue(0.0)
+
+    node = self._ensureLRTPSNode()
+    try:
+      id_tps = vtk.vtkThinPlateSplineTransform()
+      id_tps.SetBasisToR()
+      node.SetAndObserveTransformToParent(id_tps)
+      node.Modified()
+    except Exception:
+      pass
+
+    self._coef_debugPipeline(tag="reset", sample_scale=0.0)
+
+  def _coef_attachTargets(self, enabled: bool):
+    """Attach/detach the LR TPS transform to the LR warp node (and model if selected)."""
+    node = getattr(self, "lrTPSTransformNode", None)
+    if not node:
+      self._lr_log("[LR/COEF] lrTPSTransformNode missing in _coef_attachTargets")
+      return
+
+    lm = getattr(self, "lrWarpNode", None)
+    if lm is not None and slicer.mrmlScene.IsNodePresent(lm):
+      try:
+        lm.SetAndObserveTransformNodeID(node.GetID() if enabled else None)
+      except Exception:
+        pass
+
+    # Optionally the model too, if model mode is active
+    try:
+      modelChecked = bool(self.ui.modelVisualizationType.isChecked())
+    except Exception:
+      modelChecked = False
+    if modelChecked and getattr(self, "cloneModelNode", None):
+      try:
+        self.cloneModelNode.SetAndObserveTransformNodeID(node.GetID() if enabled else None)
+      except Exception:
+        pass
+
+    self._coef_debugPipeline(tag=f"attachTargets(enabled={enabled})", sample_scale=None)
+
+  def _coef_clearChoices(self):
+    """Empty the combo list and disable the coefficient transform."""
+    self._coef_vectors = []
+    self._coef_names = []
+    self._coef_current = -1
+    if hasattr(self.ui, "coefComboBox"):
+      try:
+        self.ui.coefComboBox.clear()
+      except Exception:
+        pass
+    if self.coefController:
+      self.coefController.setRange(-1.0, 1.0)
+      self.coefController.setValue(0.0)
+    self._coef_attachTargets(enabled=False)
+
+  def _coef_prepareWarpTarget(self):
+    """
+    Backward-compatible shim: just ensure LR infra exists.
+    Keeps older call sites happy without changing public methods.
+    """
+    self._lr_prepareWarpInfra()
+
+  def _coef_debugPipeline(self, tag="debug", sample_scale=None):
+    """
+    Debug info for the LR TPS pipeline, and a sample transformed delta at LM1.
+    """
+    log = self._lr_log
+    nm = "?"
+    try:
+      if getattr(self, "_coef_names", None) and self._coef_current is not None and self._coef_current >= 0:
+        nm = self._coef_names[self._coef_current]
+    except Exception:
+      pass
+
+    node = getattr(self, "lrTPSTransformNode", None)
+    lid = getattr(self, "lrWarpNode", None)
+    tid = node.GetID() if node else "(none)"
+    lid2 = lid.GetID() if lid else "(none)"
+
+    log(f"[LR/COEF:{tag}] coef='{nm}', tpsNode='{tid}', lrWarpNode='{lid2}'")
+
+    # Sample delta @ LM1 (if we have a TPS installed)
+    try:
+      if node and node.GetTransformToParent() and getattr(self, "rawMeanLandmarks", None) is not None and len(
+              self.rawMeanLandmarks) > 0:
+        tf = node.GetTransformToParent()
+        p0 = np.asarray(self.rawMeanLandmarks[0, :], dtype=float)
+        out = [0.0, 0.0, 0.0]
+        tf.TransformPoint(p0.tolist(), out)
+        delta = np.asarray(out) - p0
+        log(f"[LR/COEF:{tag}] TPS delta @ LM1 = ({delta[0]:.6g}, {delta[1]:.6g}, {delta[2]:.6g})")
+    except Exception as e:
+      log(f"[LR/COEF:{tag}] sample delta error: {e}")
+
+  def _lr_log(self, s: str):
+    """LR logger to console and GPA log box."""
+    try:
+      print(s)
+      self.ui.GPALogTextbox.insertPlainText(s + "\n")
+    except Exception:
+      print(s)
+
+  def _getViewNodeByName(self, name: str):
+    try:
+      return slicer.mrmlScene.GetFirstNodeByName(name)
+    except Exception:
+      return None
+
+  def _ensureLRGridNode(self):
+    """Create (or reuse) the LR-specific grid transform."""
+    try:
+      if getattr(self, 'lrGridTransformNode', None) and slicer.mrmlScene.IsNodePresent(self.lrGridTransformNode):
+        return self.lrGridTransformNode
+    except Exception:
+      pass
+    self.lrGridTransformNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLGridTransformNode', 'LRGridTransform')
+    GPANodeCollection.AddItem(self.lrGridTransformNode)
+    self._lr_log(f"[LR] Created LRGridTransform: {self.lrGridTransformNode.GetID()}")
+    return self.lrGridTransformNode
+
+  def _lr_prepareWarpInfra(self):
+    """
+    Prepare LR warp infra:
+      - Ensure raw mean landmarks exist
+      - Create (or reuse) 'LR Warped Landmarks' and show it in View 2
+      - Ensure LR TPS transform node exists
+      - Attach LR warp node (and model if selected) to LR TPS transform
+    """
+    # 1) Make sure we have the mean coordinates
+    if getattr(self, "rawMeanLandmarks", None) is None:
+      try:
+        if getattr(self, "LM", None) and getattr(self.LM, "mShape", None) is not None:
+          self.rawMeanLandmarks = np.asarray(self.LM.mShape, dtype=float)
+        elif getattr(self, "LM", None) and getattr(self, "LM", None).lmOrig is not None:
+          self.rawMeanLandmarks = np.asarray(self.LM.lmOrig.mean(2), dtype=float)
+      except Exception:
+        pass
+    if getattr(self, "rawMeanLandmarks", None) is None:
+      self._lr_log("[LR] Cannot initialize: no mean landmarks available yet.")
+      return
+
+    p = int(self.rawMeanLandmarks.shape[0])
+
+    # 2) Create/reuse LR warp node and populate it with the mean landmarks
+    try:
+      if not (getattr(self, "lrWarpNode", None) and slicer.mrmlScene.IsNodePresent(self.lrWarpNode)):
+        self.lrWarpNode = slicer.vtkMRMLMarkupsFiducialNode()
+        self.lrWarpNode.SetName("LR Warped Landmarks")
+        slicer.mrmlScene.AddNode(self.lrWarpNode)
+        GPANodeCollection.AddItem(self.lrWarpNode)
+        self._lr_log(f"[LR] Created LR warp node: {self.lrWarpNode.GetID()}")
+      try:
+        self.lrWarpNode.RemoveAllControlPoints()
+      except Exception:
+        pass
+      for i in range(p):
+        self.lrWarpNode.AddControlPoint(self.rawMeanLandmarks[i, :], str(i + 1))
+      self.lrWarpNode.CreateDefaultDisplayNodes()
+      d = self.lrWarpNode.GetDisplayNode()
+      if d:
+        d.SetPointLabelsVisibility(1)
+        d.SetTextScale(3)
+        try:
+          d.SetGlyphScale(float(self.ui.scaleMeanShapeSlider.value))
+        except Exception:
+          pass
+        v2 = self._getViewNodeByName("View2")
+        if v2:
+          d.SetViewNodeIDs([v2.GetID()])
+      self.lrWarpNode.SetDisplayVisibility(1)
+    except Exception as e:
+      self._lr_log(f"[LR] Warp node setup failed: {e}")
+      return
+
+    # 3) Ensure LR TPS transform node exists
+    node = self._ensureLRTPSNode()
+
+    # 4) Attach LR warp node (and model if selected) to LR TPS transform
+    try:
+      self.lrWarpNode.SetAndObserveTransformNodeID(node.GetID())
+    except Exception:
+      pass
+    try:
+      modelChecked = bool(self.ui.modelVisualizationType.isChecked())
+    except Exception:
+      modelChecked = False
+    if modelChecked and getattr(self, "cloneModelNode", None):
+      try:
+        self.cloneModelNode.SetAndObserveTransformNodeID(node.GetID())
+      except Exception:
+        pass
+
+    try:
+      tid = node.GetID() if node else "(none)"
+      lid = self.lrWarpNode.GetID() if getattr(self, "lrWarpNode", None) else "(none)"
+      self._lr_log(f"[LR] Infra ready (TPS). transform={tid}, lrWarpNode={lid}")
+    except Exception:
+      pass
+
+  def _coef_row_to_shift(self, row_3p):
+    """
+    Convert a single coefficient row (length 3p) into a (p,3) shift matrix,
+    matching the layout the GPA code expects (X-block, Y-block, Z-block),
+    and apply magnification and sample-size scaling.
+
+    Returns: (p,3) float64 numpy array (the 'shift' to add to mean).
+    """
+    import numpy as np
+
+    if getattr(self, "rawMeanLandmarks", None) is None:
+      raise RuntimeError("No mean landmarks available yet")
+
+    p = int(self.rawMeanLandmarks.shape[0])
+    a = np.asarray(row_3p, dtype=float).reshape(-1)
+    if a.size != 3 * p:
+      raise RuntimeError(f"Coefficient row length {a.size} != 3*p ({3 * p})")
+
+    v_block = np.zeros((p, 3), dtype=float)
+    v_block[:, 0] = a[0:p]
+    v_block[:, 1] = a[p:2 * p]
+    v_block[:, 2] = a[2 * p:3 * p]
+
+    try:
+      mag = float(self.ui.coefMagnificationSpin.value)
+    except Exception:
+      mag = 1000.0
+    try:
+      ssf = float(self.sampleSizeScaleFactor)
+    except Exception:
+      ssf = 1.0
+
+    shift = (mag * ssf / 3.0) * v_block
+
+    try:
+      mn, mx = float(np.min(shift)), float(np.max(shift))
+      self._lr_log(f"[LR] shift range after mag: [{mn:.6g}, {mx:.6g}]")
+    except Exception:
+      pass
+
+    return shift
+
+  def _ensureLRTPSNode(self):
+    """Create (or reuse) a dedicated MRML transform node for LR TPS warping."""
+    try:
+      if getattr(self, 'lrTPSTransformNode', None) and slicer.mrmlScene.IsNodePresent(self.lrTPSTransformNode):
+        return self.lrTPSTransformNode
+    except Exception:
+      pass
+
+    self.lrTPSTransformNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLTransformNode', 'LRTPS_Transform')
+    GPANodeCollection.AddItem(self.lrTPSTransformNode)
+    self._lr_log(f"[LR] Created LRTPS_Transform: {self.lrTPSTransformNode.GetID()}")
+    return self.lrTPSTransformNode
+
+  def _coef_applyTPS(self, scale: float):
+    """
+    Build a TPS that maps Mean → Mean + (scale * magnified coefficient shift),
+    and install it as the LR transform node's TransformToParent.
+    """
+    import numpy as np
+    logic = GPALogic()
+
+    # Guards
+    if self._coef_current is None or self._coef_current < 0:
+      self._lr_log("[LR/COEF] no coefficient selected")
+      return
+    if getattr(self, "rawMeanLandmarks", None) is None:
+      self._lr_log("[LR/COEF] rawMeanLandmarks missing")
+      return
+    if not (getattr(self, "_coef_vectors", None) and len(self._coef_vectors) > self._coef_current):
+      self._lr_log("[LR/COEF] coefficient vectors not available yet")
+      return
+
+    # Clamp scale
+    if scale > 1.0:  scale = 1.0
+    if scale < -1.0: scale = -1.0
+
+    # Base effect (includes magnification + sample-size scaling)
+    row = np.asarray(self._coef_vectors[self._coef_current]).reshape(-1)
+    base_shift = self._coef_row_to_shift(row)  # (p, 3), already magnified
+    shift = float(scale) * base_shift  # apply slider scale
+    target = self.rawMeanLandmarks + shift  # mean → mean+shift
+
+    # Build forward TPS: source = mean, target = mean+shift
+    tps = vtk.vtkThinPlateSplineTransform()
+    tps.SetSourceLandmarks(logic.convertNumpyToVTK(self.rawMeanLandmarks))
+    tps.SetTargetLandmarks(logic.convertNumpyToVTK(target))
+    tps.SetBasisToR()
+
+    # Install on LR TPS node
+    node = self._ensureLRTPSNode()
+    node.SetAndObserveTransformToParent(tps)
+    try:
+      node.Modified()
+    except Exception:
+      pass
+
+    # Quick sanity: evaluate delta at LM1
+    try:
+      p0 = np.asarray(self.rawMeanLandmarks[0, :], dtype=float)
+      out = [0.0, 0.0, 0.0]
+      tps.TransformPoint(p0.tolist(), out)
+      d = np.asarray(out) - p0
+      self._lr_log(f"[LR/COEF] TPS delta @ LM1 (scale={scale:.3f}): ({d[0]:.6g}, {d[1]:.6g}, {d[2]:.6g})")
+    except Exception:
+      pass
+
+    # Keep the debug pipeline info consistent
+    self._coef_debugPipeline(tag=f"TPS scale={scale:.3f}", sample_scale=None)
 
 
 #
