@@ -1989,6 +1989,12 @@ class GPAWidget(ScriptedLoadableModuleWidget):
     self._lr_fitBtn = self.ui.lrFitButton
     self._lr_fitStatus = self.ui.lrFitStatusLabel
 
+    # NEW: summary widget (read-only)
+    self._lr_summaryWidget = getattr(self.ui, 'lrSummaryText', None)
+    if self._lr_summaryWidget:
+      # set a friendly initial message
+      self._lr_setSummaryText("Run a model to see the geomorph::procD.lm summary here.")
+
     # Live validation on keystroke
     try:
       self._lr_formula.textChanged.connect(self._lr_onFormulaEdited)
@@ -3106,8 +3112,7 @@ class GPAWidget(ScriptedLoadableModuleWidget):
       - Y is provided as *Coords* via arrayspecs(coords, p, k=3)
       - Predictors (Size + any referenced covariates) are assembled in geomorph.data.frame
       - Formula LHS is forced to 'Coords'
-
-    Steps are individually wrapped so errors/crashes are logged precisely.
+    Also captures and displays summary(outlm) in a read-only text panel.
     """
     import numpy as np
     import pandas as pd
@@ -3147,8 +3152,9 @@ class GPAWidget(ScriptedLoadableModuleWidget):
       return
 
     # Specimen IDs (for aligning covariates)
-    files = list(self.files) if (hasattr(self, "files") and isinstance(self.files, (list, tuple)) and len(self.files) == n) \
-            else [f"spec_{i+1}" for i in range(n)]
+    files = list(self.files) if (
+              hasattr(self, "files") and isinstance(self.files, (list, tuple)) and len(self.files) == n) \
+      else [f"spec_{i + 1}" for i in range(n)]
 
     # Covariates referenced in the formula (excluding 'Size' and LHS aliases)
     base_vars = self._lr_get_base_variables_from_formula(fml_raw)
@@ -3174,8 +3180,7 @@ class GPAWidget(ScriptedLoadableModuleWidget):
         self.ui.GPALogTextbox.insertPlainText(f"[LR] Failed to read/align covariates: {e}\n")
         return
 
-    # Convenience
-    step = self._r_step
+    step = self._r_step  # convenience
 
     # ---- Headless rgl (defensive) ---------------------------------------------
     if not step(conn, "Headless rgl",
@@ -3185,7 +3190,7 @@ class GPAWidget(ScriptedLoadableModuleWidget):
       self.ui.lrFitStatusLabel.setText("R data error (rgl)")
       return
 
-    # ---- Require geomorph (we rely on arrayspecs + procD.lm) -------------------
+    # ---- Require geomorph ------------------------------------------------------
     ok_pkg, _ = self._r_try(
       'if (!"geomorph" %in% rownames(installed.packages())) '
       '  stop("geomorph not installed in this Rserve")',
@@ -3198,7 +3203,7 @@ class GPAWidget(ScriptedLoadableModuleWidget):
     # ---- Ship data to R --------------------------------------------------------
     try:
       conn.r.coords = coords_mat
-      conn.r.size   = size_vec
+      conn.r.size = size_vec
     except Exception as e:
       self.ui.lrFitStatusLabel.setText("R data error (send)")
       self.ui.GPALogTextbox.insertPlainText(f"[LR] send coords/size: {repr(e)}\n")
@@ -3214,7 +3219,7 @@ class GPAWidget(ScriptedLoadableModuleWidget):
       self.ui.lrFitStatusLabel.setText("R data error (arrayspecs)")
       return
 
-    # ---- Create predictor variables in .GlobalEnv (numeric/factor) -------------
+    # ---- Create predictor variables in .GlobalEnv ------------------------------
     added_vars = []
     if base_vars and cov_df is not None:
       for var in sorted(base_vars):
@@ -3224,7 +3229,6 @@ class GPAWidget(ScriptedLoadableModuleWidget):
           return
         series = cov_df[var]
         tmpname = f'.py_{var}'
-        # numeric first
         try:
           s_num = pd.to_numeric(series, errors="raise").to_numpy().astype(float)
           conn.r.__setattr__(tmpname, s_num)
@@ -3242,7 +3246,7 @@ class GPAWidget(ScriptedLoadableModuleWidget):
     # ---- Build a proper geomorph.data.frame ------------------------------------
     pieces = ['Size=base::as.numeric(size)', 'Coords=arr']
     for var in added_vars:
-      pieces.insert(1, f'{var}={var}')  # keep Coords last for readability
+      pieces.insert(1, f'{var}={var}')
     gdf_call = 'gdf <- geomorph::geomorph.data.frame(' + ', '.join(pieces) + ')'
     if not step(conn, "Build gdf", gdf_call):
       self.ui.lrFitStatusLabel.setText("R data error (gdf)")
@@ -3273,7 +3277,6 @@ class GPAWidget(ScriptedLoadableModuleWidget):
       self.ui.lrFitStatusLabel.setText("Extract error")
       return
 
-    # ---- Pull back to Python ----------------------------------------------------
     try:
       coef_mat = np.asarray(conn.eval('coef_mat'))
       coef_names = list(conn.eval('as.character(coef_names)'))
@@ -3281,6 +3284,18 @@ class GPAWidget(ScriptedLoadableModuleWidget):
       self.ui.lrFitStatusLabel.setText("Pull-back error")
       self.ui.GPALogTextbox.insertPlainText(f"[LR] pull coef: {repr(e)}\n")
       return
+
+    # ---- NEW: Capture full textual summary and display it ----------------------
+    if not step(conn, "Summarize model",
+                'sumtxt <- paste(utils::capture.output(summary(outlm)), collapse="\\n")'):
+      # If summary failed, keep going but show a message
+      self._lr_setSummaryText("Failed to build summary(outlm).")
+    else:
+      try:
+        summary_text = str(conn.eval('sumtxt'))
+        self._lr_setSummaryText(summary_text)
+      except Exception as e:
+        self._lr_setSummaryText(f"Could not read summary from R: {repr(e)}")
 
     # ---- Cache for downstream use ----------------------------------------------
     self._lr_last_fit = {
@@ -3293,13 +3308,15 @@ class GPAWidget(ScriptedLoadableModuleWidget):
         (v, ("numeric" if (cov_df is not None and pd.api.types.is_numeric_dtype(cov_df[v])) else "factor"))
         for v in sorted(base_vars)
       ] if base_vars else [],
-      "covariate_path": cov_path
+      "covariate_path": cov_path,
+      # NEW: keep the textual summary too
+      "summary_text": summary_text if 'summary_text' in locals() else ""
     }
+
     print(f"[LR] geomorph::procD.lm OK: coef_mat {coef_mat.shape}, terms={len(coef_names)}")
     self.ui.lrFitStatusLabel.setText("Fit complete")
 
-    print(self._lr_last_fit)
-
+    # Keep coefficient visualization in sync (unchanged)
     try:
       self._coef_refreshFromFit()
     except Exception:
@@ -4009,7 +4026,31 @@ class GPAWidget(ScriptedLoadableModuleWidget):
     # Keep the debug pipeline info consistent
     self._coef_debugPipeline(tag=f"TPS scale={scale:.3f}", sample_scale=None)
 
-
+  def _lr_setSummaryText(self, txt: str):
+    """Replace the summary panel contents (monospace, no wrap). Safe no-op if widget absent."""
+    w = getattr(self.ui, 'lrSummaryText', None)
+    if not w:
+      return
+    try:
+      w.setPlainText(str(txt) if txt is not None else "")
+      # Make it monospaced and no-wrap for nice alignment
+      try:
+        w.setLineWrapMode(qt.QPlainTextEdit.NoWrap)
+      except Exception:
+        pass
+      try:
+        f = w.font
+        # Prefer Menlo on macOS, Consolas on Windows, else a generic monospace
+        fams = ["Menlo", "Consolas", "Courier New", "Monospace"]
+        for fam in fams:
+          f.setFamily(fam)
+          break
+        f.setFixedPitch(True)
+        w.setFont(f)
+      except Exception:
+        pass
+    except Exception:
+      pass
 #
 # GPALogic
 #

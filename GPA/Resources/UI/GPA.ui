@@ -6,23 +6,28 @@
       <number>0</number>
     </property>
 
-    <!-- ===================== TAB 1: Setup Analysis (UNCHANGED) ===================== -->
+    <!-- ===================== TAB 1: Setup Analysis ===================== -->
     <widget class="QWidget" name="setupAnalysisTab">
       <attribute name="title">
         <string>Setup Analysis</string>
       </attribute>
       <layout class="QVBoxLayout" name="setupTabLayout">
+
         <item>
           <widget class="ctkCollapsibleButton" name="inbutton">
             <property name="collapsed"><bool>false</bool></property>
             <property name="text"><string>Setup Analysis</string></property>
             <layout class="QGridLayout" name="inputLayout">
+
               <item row="0" column="0" colspan="3">
                 <widget class="QPushButton" name="LMbutton">
                   <property name="text"><string>Select Landmark Files ...</string></property>
-                  <property name="toolTip"><string>Select one landmark file for each subject. Files must contain the identical number of landmark points.</string></property>
+                  <property name="toolTip">
+                    <string>Select one landmark file for each subject. Files must contain the identical number of landmark points.</string>
+                  </property>
                 </widget>
               </item>
+
               <item row="1" column="0" colspan="3">
                 <widget class="ctkCollapsibleButton" name="fileViewerCollapsibleButton">
                   <property name="collapsed"><bool>true</bool></property>
@@ -43,6 +48,7 @@
                   </layout>
                 </widget>
               </item>
+
               <item row="2" column="0">
                 <widget class="QLabel" name="outLabel">
                   <property name="text"><string>Select output directory:</string></property>
@@ -56,6 +62,7 @@
                   <property name="text"><string>...</string></property>
                 </widget>
               </item>
+
               <item row="3" column="0">
                 <widget class="QLabel" name="excludeLMLabel">
                   <property name="text"><string>Exclude landmarks:</string></property>
@@ -66,17 +73,20 @@
                   <property name="toolTip"><string>No spaces. Separate numbers by commas.  Example:  51,52</string></property>
                 </widget>
               </item>
+
               <item row="4" column="0" colspan="3">
                 <widget class="QCheckBox" name="BoasOptionCheckBox">
                   <property name="text"><string>Use Boas coordinates for GPA</string></property>
                   <property name="toolTip"><string>If checked, GPA will skip scaling.</string></property>
                 </widget>
               </item>
+
               <item row="5" column="0" colspan="3">
                 <widget class="ctkCollapsibleGroupBox" name="loadCovariatesCollapsibleButton">
                   <property name="collapsed"><bool>true</bool></property>
                   <property name="title"><string>Covariate options</string></property>
                   <layout class="QGridLayout" name="loadCovariatesLayout">
+
                     <item row="0" column="0">
                       <widget class="ctkCollapsibleGroupBox" name="generateCovariatesTableBox">
                         <property name="collapsed"><bool>false</bool></property>
@@ -98,20 +108,29 @@
                         </layout>
                       </widget>
                     </item>
+
                     <item row="1" column="0">
                       <widget class="ctkCollapsibleGroupBox" name="loadCovariatesTableBox">
                         <property name="collapsed"><bool>true</bool></property>
                         <property name="title"><string>Import covariates table to include in analysis</string></property>
                         <layout class="QHBoxLayout" name="loadCovariatesTableBoxLayout">
-                          <item><widget class="QLabel" name="selectCovariatesLabel"><property name="text"><string>Select covariates table:</string></property></widget></item>
+                          <item>
+                            <widget class="QLabel" name="selectCovariatesLabel">
+                              <property name="text"><string>Select covariates table:</string></property>
+                            </widget>
+                          </item>
                           <item><widget class="QLineEdit" name="selectCovariatesText"/></item>
-                          <item><widget class="QPushButton" name="selectCovariatesButton"><property name="text"><string>...</string></property></widget></item>
+                          <item><widget class="QPushButton" name="selectCovariatesButton">
+                            <property name="text"><string>...</string></property>
+                          </widget></item>
                         </layout>
                       </widget>
                     </item>
+
                   </layout>
                 </widget>
               </item>
+
               <item row="6" column="0" colspan="3">
                 <widget class="QPushButton" name="loadButton">
                   <property name="text"><string>Execute GPA + PCA</string></property>
@@ -119,6 +138,7 @@
                   <property name="toolTip"><string>Push to start the program. Make sure you have filled in all the data.</string></property>
                 </widget>
               </item>
+
               <item row="7" column="0" colspan="3">
                 <widget class="QPushButton" name="openResultsButton">
                   <property name="text"><string>View output files</string></property>
@@ -126,6 +146,7 @@
                   <property name="toolTip"><string>Push to open the folder where the GPA + PCA results are stored</string></property>
                 </widget>
               </item>
+
             </layout>
           </widget>
         </item>
@@ -135,9 +156,14 @@
             <property name="collapsed"><bool>true</bool></property>
             <property name="text"><string>Load previous analysis</string></property>
             <layout class="QGridLayout" name="loadFromFileLayout">
-              <item row="0" column="0"><widget class="QLabel" name="resultsLabel"><property name="text"><string>Results Directory</string></property></widget></item>
+              <item row="0" column="0">
+                <widget class="QLabel" name="resultsLabel">
+                  <property name="text"><string>Results Directory</string></property>
+                </widget>
+              </item>
               <item row="0" column="1"><widget class="QLineEdit" name="resultsText"/></item>
               <item row="0" column="2"><widget class="QPushButton" name="resultsButton"><property name="text"><string>...</string></property></widget></item>
+
               <item row="1" column="0" colspan="3">
                 <widget class="QPushButton" name="loadResultsButton">
                   <property name="text"><string>Load GPA + PCA Analysis from File</string></property>
@@ -158,13 +184,15 @@
             </layout>
           </widget>
         </item>
+
       </layout>
     </widget>
 
-    <!-- ===================== TAB 2: Explore Data/Results (UNCHANGED) ===================== -->
+    <!-- ===================== TAB 2: Explore Data/Results ===================== -->
     <widget class="QWidget" name="exploreDataResultsTab">
       <attribute name="title"><string>Explore Data/Results</string></attribute>
       <layout class="QVBoxLayout" name="exploreTabLayout">
+
         <item>
           <widget class="ctkCollapsibleButton" name="meanShapeFrame">
             <property name="collapsed"><bool>false</bool></property>
@@ -212,15 +240,16 @@
               <item row="2" column="1"><widget class="QLabel" name="Ylabel"><property name="text"><string>Y Axis</string></property></widget></item>
               <item row="2" column="2" colspan="3"><widget class="QComboBox" name="YcomboBox"/></item>
               <item row="4" column="1"><widget class="QLabel" name="selectFactorLabel"><property name="text"><string>Select factor:</string></property></widget></item>
-              <item row="4" column="2"><widget class="QComboBox" name="selectFactor">
+              <item row="4" column="2">
+                <widget class="QComboBox" name="selectFactor">
                   <item><property name="text"><string>No factor data</string></property></item>
-              </widget></item>
+                </widget>
+              </item>
               <item row="5" column="1" colspan="5"><widget class="QPushButton" name="plotButton"><property name="text"><string>Scatter Plot</string></property><property name="enabled"><bool>false</bool></property></widget></item>
             </layout>
           </widget>
         </item>
 
-        <!-- Lollipop Plot Options (UNCHANGED) -->
         <item>
           <widget class="ctkCollapsibleButton" name="lolliFrame">
             <property name="collapsed"><bool>false</bool></property>
@@ -233,17 +262,25 @@
               <item row="3" column="1"><widget class="QLabel" name="vectorThreeLabel"><property name="text"><string>Vector Three: Blue</string></property></widget></item>
               <item row="3" column="2" colspan="3"><widget class="QComboBox" name="vectorThree"/></item>
               <item row="4" column="2"><widget class="QCheckBox" name="TwoDType"><property name="text"><string>Lollipop 2D Projection</string></property></widget></item>
-              <item row="6" column="1" colspan="6"><widget class="QPushButton" name="lolliButton"><property name="text"><string>Lollipop Vector Plot</string></property><property name="enabled"><bool>false</bool></property><property name="toolTip"><string>Plot PC vectors</string></property></widget></item>
+              <item row="6" column="1" colspan="6">
+                <widget class="QPushButton" name="lolliButton">
+                  <property name="text"><string>Lollipop Vector Plot</string></property>
+                  <property name="enabled"><bool>false</bool></property>
+                  <property name="toolTip"><string>Plot PC vectors</string></property>
+                </widget>
+              </item>
             </layout>
           </widget>
         </item>
+
       </layout>
     </widget>
 
-    <!-- ===================== TAB 3: Interactive 3D Visualization (UNCHANGED) ===================== -->
+    <!-- ===================== TAB 3: Interactive 3D Visualization ===================== -->
     <widget class="QWidget" name="visualizeTab">
       <attribute name="title"><string>Interactive 3D Visualization</string></attribute>
       <layout class="QVBoxLayout" name="visualizeTabLayout">
+
         <item>
           <widget class="ctkCollapsibleButton" name="selectTemplatesButton">
             <property name="collapsed"><bool>false</bool></property>
@@ -291,7 +328,12 @@
           </widget>
         </item>
 
-        <item><widget class="QPushButton" name="resetButton"><property name="text"><string>Reset Scene</string></property><property name="toolTip"><string>Push to reset all fields.</string></property></widget></item>
+        <item>
+          <widget class="QPushButton" name="resetButton">
+            <property name="text"><string>Reset Scene</string></property>
+            <property name="toolTip"><string>Push to reset all fields.</string></property>
+          </widget>
+        </item>
 
         <item>
           <spacer name="verticalSpacerFinal">
@@ -299,15 +341,16 @@
             <property name="sizeHint" stdset="0"><size><width>20</width><height>40</height></size></property>
           </spacer>
         </item>
+
       </layout>
     </widget>
 
-    <!-- ===================== TAB 4: Geomorph Linear Regression (NEW) ===================== -->
+    <!-- ===================== TAB 4: Geomorph Linear Regression ===================== -->
     <widget class="QWidget" name="geomorphLRTab">
       <attribute name="title"><string>Geomorph Linear Regression</string></attribute>
       <layout class="QVBoxLayout" name="geomorphLRTabLayout">
 
-        <!-- Formula with buttons and validation -->
+        <!-- Formula -->
         <item>
           <widget class="QGroupBox" name="lrFormulaGroup">
             <property name="title"><string>R Formula</string></property>
@@ -322,7 +365,9 @@
                 <widget class="QPlainTextEdit" name="lrFormulaEdit">
                   <property name="minimumHeight"><number>120</number></property>
                   <property name="maximumHeight"><number>200</number></property>
-                  <property name="toolTip"><string>Type an R-like formula (e.g., Coords ~ Size + Sex + Size:Sex). Use + for main effects and : for pairwise interactions. Add -1 to remove the intercept.</string></property>
+                  <property name="toolTip">
+                    <string>Type an R-like formula (e.g., Coords ~ Size + Sex + Size:Sex). Use + for main effects and : for pairwise interactions. Add -1 to remove the intercept.</string>
+                  </property>
                   <property name="placeholderText"><string>Coords ~ Size</string></property>
                 </widget>
               </item>
@@ -393,19 +438,19 @@
               <property name="rightMargin"><number>6</number></property>
               <property name="bottomMargin"><number>6</number></property>
               <property name="verticalSpacing"><number>2</number></property>
+
               <item row="0" column="0">
                 <widget class="QLabel" name="lrPossibleLabel">
                   <property name="text">
                     <string>These Covariates (including “Size”) are valid in formulas:</string>
                   </property>
-                  <property name="styleSheet">
-                    <string notr="true">margin:0px;padding:0px;</string>
-                  </property>
+                  <property name="styleSheet"><string notr="true">margin:0px;padding:0px;</string></property>
                   <property name="sizePolicy">
                     <sizepolicy hsizetype="Preferred" vsizetype="Minimum"/>
                   </property>
                 </widget>
               </item>
+
               <item row="1" column="0">
                 <widget class="QListWidget" name="lrPossibleCovariatesList">
                   <property name="selectionMode"><enum>QAbstractItemView::NoSelection</enum></property>
@@ -459,7 +504,7 @@
           </widget>
         </item>
 
-        <!-- Fit Model area -->
+        <!-- Fit Model -->
         <item>
           <widget class="QGroupBox" name="lrRunGroup">
             <property name="title"><string>Fit model (Rserve)</string></property>
@@ -485,14 +530,29 @@
           </widget>
         </item>
 
-        <!-- ===== NEW: Coefficient Visualization (mirrors PCA slider) ===== -->
+        <!-- NEW: Model Summary (read-only) -->
+        <item>
+          <widget class="QGroupBox" name="lrSummaryGroup">
+            <property name="title"><string>Model Summary (read-only)</string></property>
+            <layout class="QVBoxLayout" name="lrSummaryLayout">
+              <item>
+                <widget class="QPlainTextEdit" name="lrSummaryText">
+                  <property name="readOnly"><bool>true</bool></property>
+                  <property name="minimumHeight"><number>220</number></property>
+                  <property name="toolTip"><string>Full output of summary(outlm) from geomorph::procD.lm</string></property>
+                </widget>
+              </item>
+            </layout>
+          </widget>
+        </item>
+
+        <!-- Coefficient Visualization -->
         <item>
           <widget class="ctkCollapsibleButton" name="coefVisualizationParametersButton">
             <property name="collapsed"><bool>false</bool></property>
             <property name="text"><string>Coefficient Visualization Parameters</string></property>
             <layout class="QGridLayout" name="coefVisualizationParametersLayout">
 
-              <!-- Row 0: magnification -->
               <item row="0" column="0">
                 <widget class="QLabel" name="coefMagnificationLabel">
                   <property name="text"><string>Magnification Factor:</string></property>
@@ -513,7 +573,6 @@
                 </widget>
               </item>
 
-              <!-- Row 1: selector + slider + numeric readout -->
               <item row="1" column="0" colspan="3">
                 <layout class="QHBoxLayout" name="coefSelectionLayout">
                   <item>
@@ -540,7 +599,6 @@
                 </layout>
               </item>
 
-              <!-- Row 2: reset -->
               <item row="2" column="0" colspan="3">
                 <widget class="QPushButton" name="coefResetButton">
                   <property name="text"><string>Reset Coefficient View</string></property>
@@ -548,7 +606,6 @@
                 </widget>
               </item>
 
-              <!-- Row 3: help -->
               <item row="3" column="0" colspan="3">
                 <widget class="QLabel" name="coefHelpLabel">
                   <property name="text">
@@ -568,6 +625,7 @@
             <property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property>
           </spacer>
         </item>
+
       </layout>
     </widget>
 
